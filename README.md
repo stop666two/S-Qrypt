@@ -92,15 +92,28 @@ S-Qrypt 是一个严格零信任、后量子安全的加密笔记保险箱，专
 
 ## 快速部署
 
-### 一键部署（Cloudflare Dashboard）
+### 一键部署
 
-1. 打开 [Cloudflare Dashboard](https://dash.cloudflare.com/) → **Workers & Pages**
-2. 点击 **Create** → **Workers** → **Deploy your code via Git**
-3. 选择仓库 `stop666two/S-Qrypt`，授权连接
-4. 在 **Settings** → **Variables** 中确认 D1 数据库已自动绑定为 `DB`
-5. 点击 **Save and Deploy**
+```bash
+# 1. 克隆项目
+git clone https://github.com/stop666two/S-Qrypt.git
+cd S-Qrypt
 
-Cloudflare 会自动检测 `wrangler.jsonc`，创建 Worker 和 D1 数据库并绑定。
+# 2. 安装依赖
+npm install
+
+# 3. 登录 Cloudflare
+npx wrangler login
+
+# 4. 一键创建 D1 数据库 + 部署
+npm run setup
+```
+
+`npm run setup` 会自动完成：
+1. 创建 D1 数据库 `s-qrypt-db`
+2. 将数据库 ID 写入 `wrangler.jsonc`
+3. 部署 Worker
+4. 恢复 `wrangler.jsonc` 占位符（防止敏感信息泄漏）
 
 ### 手动部署
 

@@ -8,7 +8,7 @@
     {
       "binding": "DB",
       "database_name": "s-qrypt-db",
-      "database_id": "local-dev-dummy-id"
+      "database_id": "local-dev-only"
     }
   ],
   "observability": {

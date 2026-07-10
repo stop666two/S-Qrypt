@@ -8,6 +8,7 @@
     "deploy:quick": "tsc --noEmit && wrangler deploy",
     "dev": "wrangler dev",
     "start": "wrangler dev",
+    "setup": "node scripts/setup.mjs",
     "test": "vitest",
     "cf-typegen": "wrangler types"
   },
