@@ -1,77 +1,118 @@
 /**
  * S-Qrypt 一键部署 setup 脚本
- * 自动创建 D1 数据库并更新 wrangler.jsonc
+ * 自动创建 D1 数据库 → 更新 wrangler.jsonc → 部署 Worker → 恢复占位符
+ *
+ * 本地使用: npx wrangler login → npm run setup  (无需 API Token)
+ * CI 使用:  设置 CLOUDFLARE_API_TOKEN 环境变量  (GitHub Actions 等)
+ *
  * Usage: node scripts/setup.mjs
  */
 import { execSync } from 'child_process';
-import { readFileSync, writeFileSync, existsSync } from 'fs';
+import { readFileSync, writeFileSync } from 'fs';
 import { fileURLToPath } from 'url';
 import { dirname, resolve } from 'path';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const wranglerPath = resolve(__dirname, '../wrangler.jsonc');
+const DB_NAME = 's-qrypt-db';
 
-async function main() {
-  console.log('🚀 S-Qrypt 一键部署 Setup\n');
+function run(cmd, opts = {}) {
+  return execSync(cmd, { encoding: 'utf8', shell: true, ...opts });
+}
 
-  // Step 1: 创建 D1 数据库
-  console.log('1. 创建 D1 数据库...');
-  let dbId, dbName;
+function parseDatabaseId(output) {
+  const m = output.match(/"database_id":\s*"([^"]+)"/)
+    || output.match(/database_id\s*=\s*"([^"]+)"/);
+  return m ? m[1] : null;
+}
+
+async function getOrCreateDatabase() {
+  console.log('1. 创建/获取 D1 数据库...');
+
   try {
-    const out = execSync('npx wrangler d1 create s-qrypt-db', { encoding: 'utf8', shell: true });
-    // Parse: ⛅ "database_id": "xxxx-xxxx-xxxx"
-    const match = out.match(/"database_id":\s*"([^"]+)"/);
+    const out = run(`npx wrangler d1 create ${DB_NAME}`);
+    const dbId = parseDatabaseId(out);
+    if (dbId) {
+      console.log(`   ✅ 新数据库已创建: ${DB_NAME} (ID: ${dbId})`);
+      return dbId;
+    }
+  } catch { }
+
+  try {
+    const listJson = run(`npx wrangler d1 list --json`);
+    const dbs = JSON.parse(listJson);
+    const match = dbs.find(d => d.name === DB_NAME || d.database_name === DB_NAME);
     if (match) {
-      dbId = match[1];
-      dbName = 's-qrypt-db';
-      console.log(`   ✅ 数据库已创建: ${dbName} (ID: ${dbId})`);
-    } else {
-      // Might already exist
-      const list = execSync('npx wrangler d1 list', { encoding: 'utf8', shell: true });
-      const listMatch = list.match(/(\S+)\s+(\S{8}-\S{4}-\S{4}-\S{4}-\S{12})\s+/);
-      if (listMatch) {
-        dbName = listMatch[1];
-        dbId = listMatch[2];
-        console.log(`   ✅ 使用已有数据库: ${dbName} (ID: ${dbId})`);
-      } else {
-        throw new Error('无法获取 D1 数据库 ID');
+      const dbId = match.uuid || match.database_id;
+      console.log(`   ✅ 使用已有数据库: ${DB_NAME} (ID: ${dbId})`);
+      return dbId;
+    }
+  } catch {
+    const listOut = run(`npx wrangler d1 list`);
+    for (const line of listOut.split('\n').filter(l => l.includes(DB_NAME))) {
+      const id = line.trim().split(/\s+/).find(p => /^[0-9a-f]{8}-/.test(p));
+      if (id) {
+        console.log(`   ✅ 使用已有数据库: ${DB_NAME} (ID: ${id})`);
+        return id;
       }
     }
-  } catch (e) {
-    console.error('   ❌ 创建失败:', e.message);
-    process.exit(1);
   }
 
-  // Step 2: 更新 wrangler.jsonc
+  throw new Error(`无法创建或找到数据库 "${DB_NAME}"`);
+}
+
+async function updateConfig(dbId) {
   console.log('\n2. 更新 wrangler.jsonc...');
-  try {
-    let config = readFileSync(wranglerPath, 'utf8');
-    config = config.replace(/"database_id":\s*"[^"]*"/, `"database_id": "${dbId}"`);
-    writeFileSync(wranglerPath, config, 'utf8');
-    console.log(`   ✅ database_id 已更新`);
-  } catch (e) {
-    console.error('   ❌ 更新失败:', e.message);
-    process.exit(1);
-  }
+  let config = readFileSync(wranglerPath, 'utf8');
+  config = config.replace(/"database_id":\s*"[^"]*"/, `"database_id": "${dbId}"`);
+  writeFileSync(wranglerPath, config, 'utf8');
+  console.log('   ✅ database_id 已写入');
+}
 
-  // Step 3: 部署
+async function deployWorker() {
   console.log('\n3. 部署 Worker...');
+  run('npx wrangler deploy', { stdio: 'inherit' });
+  console.log('\n   ✅ Worker 部署完成');
+}
+
+function restorePlaceholder() {
   try {
-    execSync('npx wrangler deploy', { stdio: 'inherit', shell: true });
-    console.log('\n   ✅ 部署完成!');
-  } catch (e) {
-    console.error('   ❌ 部署失败:', e.message);
+    let config = readFileSync(wranglerPath, 'utf8');
+    config = config.replace(/"database_id":\s*"[^"]*"/,
+      '"database_id": "00000000-0000-0000-0000-000000000000"');
+    writeFileSync(wranglerPath, config, 'utf8');
+  } catch { }
+}
+
+async function main() {
+  const isCI = process.env.CI === 'true';
+
+  console.log('╔════════════════════════════════════╗');
+  console.log('║   S-Qrypt 一键部署 Setup           ║');
+  console.log('╚════════════════════════════════════╝\n');
+
+  if (isCI && !process.env.CLOUDFLARE_API_TOKEN) {
+    console.error('❌ CI 环境需要设置 CLOUDFLARE_API_TOKEN');
+    console.error('   请前往 Settings → Secrets → Actions 添加');
     process.exit(1);
   }
 
-  // Step 4: 恢复 wrangler.jsonc（去掉真实 ID 防止泄漏）
   try {
-    let config = readFileSync(wranglerPath, 'utf8');
-    config = config.replace(/"database_id":\s*"[^"]*"/, '"database_id": "00000000-0000-0000-0000-000000000000"');
-    writeFileSync(wranglerPath, config, 'utf8');
-  } catch (_) {}
+    const dbId = await getOrCreateDatabase();
+    await updateConfig(dbId);
+    await deployWorker();
+  } catch (e) {
+    restorePlaceholder();
+    console.error(`\n❌ 部署失败: ${e.message}`);
+    process.exit(1);
+  }
 
-  console.log('\n🎉 部署成功! 访问 Cloudflare Dashboard 查看 Worker URL');
+  if (!isCI) {
+    restorePlaceholder();
+    console.log('\n⚠️  已恢复 wrangler.jsonc 占位符');
+  }
+
+  console.log('\n🎉 部署成功!');
 }
 
 main();

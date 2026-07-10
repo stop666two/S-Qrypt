@@ -1,5 +1,6 @@
 import { homeHtml } from './homeHtml';
 import { cryptoSandboxHtml } from './cryptoSandboxHtml';
+import { deployHtml } from './deployHtml';
 
 const API_PREFIX = '/api';
 
@@ -178,6 +179,19 @@ self.addEventListener('fetch',e=>e.respondWith(fetch(e.request).catch(()=>new Re
         headers: {
           'Content-Type': 'text/html; charset=utf-8',
           'Content-Security-Policy': "default-src 'self'; script-src 'self' 'unsafe-inline';",
+          'X-Content-Type-Options': 'nosniff',
+          'Cache-Control': 'no-store',
+        },
+      });
+    }
+
+    // Deploy guide page
+    if (path === '/deploy') {
+      return new Response(deployHtml, {
+        status: 200,
+        headers: {
+          'Content-Type': 'text/html; charset=utf-8',
+          'Content-Security-Policy': "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline';",
           'X-Content-Type-Options': 'nosniff',
           'Cache-Control': 'no-store',
         },
