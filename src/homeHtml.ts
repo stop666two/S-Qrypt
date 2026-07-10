@@ -310,7 +310,8 @@ function getDeviceFP() {
 }
 function fpHash(fp) { return hex(sha256(new TextEncoder().encode(JSON.stringify(fp)))).slice(0,16) }
 async function importRsaPub(pem) {
-  const b64 = pem.replace(/-----[^-]+-----/g, '').replace(/\s/g, '');
+  const b64 = pem.replace(/[^A-Za-z0-9+/=]/g, '');
+  if (!b64) throw new Error('未找到有效的 Base64 数据');
   const raw = Uint8Array.from(atob(b64), c => c.charCodeAt(0));
   return await crypto.subtle.importKey('spki', raw, { name: 'RSA-OAEP', hash: 'SHA-256' }, false, ['encrypt']);
 }
