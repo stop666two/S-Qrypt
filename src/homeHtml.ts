@@ -309,10 +309,23 @@ function getDeviceFP() {
   return info;
 }
 function fpHash(fp) { return hex(sha256(new TextEncoder().encode(JSON.stringify(fp)))).slice(0,16) }
+function b64dec(s) {
+  const map = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
+  s = s.replace(/[^A-Za-z0-9+/=]/g, '');
+  if (!s) throw new Error('Base64 数据为空');
+  const r = [];
+  for (let i = 0; i < s.length; i += 4) {
+    const c = s.slice(i, Math.min(i + 4, s.length));
+    const e = [0, 1, 2, 3].map(j => { const p = map.indexOf(c[j]); return p >= 0 ? p : c[j] === '=' ? 0 : 0; });
+    r.push((e[0] << 2) | (e[1] >> 4));
+    if (c[2] !== '=') r.push(((e[1] & 15) << 4) | (e[2] >> 2));
+    if (c[3] !== '=') r.push(((e[2] & 3) << 6) | e[3]);
+  }
+  return new Uint8Array(r);
+}
 async function importRsaPub(pem) {
-  const b64 = pem.replace(/[^A-Za-z0-9+/=]/g, '');
-  if (!b64) throw new Error('未找到有效的 Base64 数据');
-  const raw = Uint8Array.from(atob(b64), c => c.charCodeAt(0));
+  const raw = b64dec(pem);
+  if (raw.length < 20) throw new Error('Base64 数据过短（' + raw.length + ' 字节），请检查 PEM 是否完整');
   return await crypto.subtle.importKey('spki', raw, { name: 'RSA-OAEP', hash: 'SHA-256' }, false, ['encrypt']);
 }
 async function rsaEncrypt(pubKey, data) {
