@@ -178,7 +178,7 @@ self.addEventListener('fetch',e=>e.respondWith(fetch(e.request).catch(()=>new Re
         status: 200,
         headers: {
           'Content-Type': 'text/html; charset=utf-8',
-          'Content-Security-Policy': "default-src 'self'; script-src 'self' 'unsafe-inline';",
+          'Content-Security-Policy': "default-src 'self'; script-src 'self' 'unsafe-inline' https://unpkg.com; connect-src 'self' https://unpkg.com https://static.cloudflareinsights.com;",
           'X-Content-Type-Options': 'nosniff',
           'Cache-Control': 'no-store',
         },
