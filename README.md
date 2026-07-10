@@ -2,7 +2,7 @@
 
 **后量子安全加密笔记 · Zero-Trust Encrypted Notes on Cloudflare Workers**
 
-[![Deploy to Cloudflare Workers](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/stop666two/S-Qrypt)
+[![Deploy with Workers](https://img.shields.io/badge/Deploy-Cloudflare_Workers-f38020?logo=cloudflare&style=for-the-badge)](https://dash.cloudflare.com/?to=workers-and-pages)
 
 S-Qrypt 是一个严格零信任、后量子安全的加密笔记保险箱，专为 Cloudflare Workers 无服务器平台与 D1 边缘数据库设计。
 
@@ -92,14 +92,15 @@ S-Qrypt 是一个严格零信任、后量子安全的加密笔记保险箱，专
 
 ## 快速部署
 
-### 一键部署
+### 一键部署（Cloudflare Dashboard）
 
-[![Deploy to Cloudflare Workers](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/stop666two/S-Qrypt)
+1. 打开 [Cloudflare Dashboard](https://dash.cloudflare.com/) → **Workers & Pages**
+2. 点击 **Create** → **Workers** → **Deploy your code via Git**
+3. 选择仓库 `stop666two/S-Qrypt`，授权连接
+4. 在 **Settings** → **Variables** 中确认 D1 数据库已自动绑定为 `DB`
+5. 点击 **Save and Deploy**
 
-点击上方按钮，授权 Cloudflare 后自动完成：
-1. 创建 Worker 脚本
-2. 创建 D1 数据库
-3. 执行数据库模式迁移
+Cloudflare 会自动检测 `wrangler.jsonc`，创建 Worker 和 D1 数据库并绑定。
 
 ### 手动部署
 
