@@ -65,8 +65,9 @@ async function ensureSchema(db: D1Database): Promise<void> {
   if (schemaEnsured) return;
   schemaEnsured = true;
   await db.exec(
-    "CREATE TABLE IF NOT EXISTS config (id TEXT PRIMARY KEY, verification_token TEXT NOT NULL, operation_token_hash TEXT NOT NULL DEFAULT '', init_completed INTEGER NOT NULL DEFAULT 0, kdf_version INTEGER NOT NULL DEFAULT 1)"
+    "CREATE TABLE IF NOT EXISTS config (id TEXT PRIMARY KEY, verification_token TEXT NOT NULL, operation_token_hash TEXT NOT NULL DEFAULT '', init_completed INTEGER NOT NULL DEFAULT 0, kdf_version INTEGER NOT NULL DEFAULT 1, salt TEXT NOT NULL DEFAULT '')"
   );
+  try { await db.exec("ALTER TABLE config ADD COLUMN salt TEXT NOT NULL DEFAULT ''"); } catch (_) {}
   await db.exec(
     "CREATE TABLE IF NOT EXISTS notes (id INTEGER PRIMARY KEY AUTOINCREMENT, encrypted_meta_packet TEXT NOT NULL DEFAULT '', encrypted_body TEXT NOT NULL DEFAULT '', is_test INTEGER NOT NULL DEFAULT 0, deleted INTEGER NOT NULL DEFAULT 0, created_at TEXT DEFAULT (datetime('now')), updated_at TEXT DEFAULT (datetime('now')))"
   );
@@ -264,10 +265,13 @@ self.addEventListener('fetch',e=>e.respondWith(fetch(e.request).catch(()=>new Re
         return jsonResponse({ error: 'rate_limited', retry_after: rl.retryAfter }, 429);
       }
       const config = await env.DB.prepare(
-        'SELECT verification_token FROM config WHERE id = ?'
-      ).bind('app_config').first<{ verification_token: string }>();
+        'SELECT verification_token, salt FROM config WHERE id = ?'
+      ).bind('app_config').first<{ verification_token: string; salt: string }>();
       if (!config) return errorResponse('not_initialized', 404);
-      return jsonResponse({ verification_token: config.verification_token });
+      return jsonResponse({
+        verification_token: config.verification_token,
+        salt: config.salt || undefined,
+      });
     }
 
     // POST /api/init — initialize vault
@@ -282,8 +286,7 @@ self.addEventListener('fetch',e=>e.respondWith(fetch(e.request).catch(()=>new Re
       let body: {
         verification_token?: string;
         operation_token_hash?: string;
-        encrypted_meta_packet?: string;
-        encrypted_body?: string;
+        salt?: string;
         kdf_version?: number;
       };
       try {
@@ -295,18 +298,20 @@ self.addEventListener('fetch',e=>e.respondWith(fetch(e.request).catch(()=>new Re
       if (!body.operation_token_hash) return errorResponse('missing_operation_token_hash');
 
       await env.DB.prepare(
-        `INSERT INTO config (id, verification_token, operation_token_hash, init_completed, kdf_version)
-         VALUES (?, ?, ?, 1, ?)
+        `INSERT INTO config (id, verification_token, operation_token_hash, init_completed, kdf_version, salt)
+         VALUES (?, ?, ?, 1, ?, ?)
          ON CONFLICT (id) DO UPDATE SET
            verification_token = excluded.verification_token,
            operation_token_hash = excluded.operation_token_hash,
            init_completed = 1,
-           kdf_version = excluded.kdf_version`
+           kdf_version = excluded.kdf_version,
+           salt = excluded.salt`
       ).bind(
         'app_config',
         body.verification_token,
         body.operation_token_hash,
-        body.kdf_version ?? 1
+        body.kdf_version ?? 1,
+        body.salt ?? ''
       ).run();
 
       return jsonResponse({ status: 'ok' }, 201);
