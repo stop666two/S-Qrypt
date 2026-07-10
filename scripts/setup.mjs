@@ -29,6 +29,7 @@ function parseDatabaseId(output) {
 async function getOrCreateDatabase() {
   console.log('1. 创建/获取 D1 数据库...');
 
+  // Try creating new database
   try {
     const out = run(`npx wrangler d1 create ${DB_NAME}`);
     const dbId = parseDatabaseId(out);
@@ -36,8 +37,20 @@ async function getOrCreateDatabase() {
       console.log(`   ✅ 新数据库已创建: ${DB_NAME} (ID: ${dbId})`);
       return dbId;
     }
-  } catch { }
+  } catch (e) {
+    // DB already exists — continue to list
+    if (e.stdout && e.stdout.includes('already exists')) {
+      console.log('   ℹ️  数据库已存在，尝试获取 ID...');
+    } else {
+      const msg = e.stderr || e.message || '';
+      if (msg.includes('Authentication error') || msg.includes('10000')) {
+        throw new Error('Cloudflare 认证失败，请先运行: npx wrangler login');
+      }
+      throw e;
+    }
+  }
 
+  // List existing databases
   try {
     const listJson = run(`npx wrangler d1 list --json`);
     const dbs = JSON.parse(listJson);
@@ -47,7 +60,12 @@ async function getOrCreateDatabase() {
       console.log(`   ✅ 使用已有数据库: ${DB_NAME} (ID: ${dbId})`);
       return dbId;
     }
-  } catch {
+  } catch (e) {
+    const msg = e.stderr || e.message || '';
+    if (msg.includes('Authentication error') || msg.includes('10000')) {
+      throw new Error('Cloudflare 认证失败，请先运行: npx wrangler login');
+    }
+    // Fallback: text parse
     const listOut = run(`npx wrangler d1 list`);
     for (const line of listOut.split('\n').filter(l => l.includes(DB_NAME))) {
       const id = line.trim().split(/\s+/).find(p => /^[0-9a-f]{8}-/.test(p));
@@ -58,7 +76,7 @@ async function getOrCreateDatabase() {
     }
   }
 
-  throw new Error(`无法创建或找到数据库 "${DB_NAME}"`);
+  throw new Error(`无法获取数据库 "${DB_NAME}" 的信息`);
 }
 
 async function updateConfig(dbId) {
