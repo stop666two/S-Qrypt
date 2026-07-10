@@ -1,6 +1,9 @@
 import { homeHtml } from './homeHtml';
 import { cryptoSandboxHtml } from './cryptoSandboxHtml';
 import { deployHtml } from './deployHtml';
+import { argon2WasmBase64, argon2Js } from './argon2Files';
+
+declare function atob(s: string): string;
 
 const API_PREFIX = '/api';
 
@@ -172,13 +175,38 @@ self.addEventListener('fetch',e=>e.respondWith(fetch(e.request).catch(()=>new Re
       );
     }
 
+    // Self-hosted argon2 WASM (no external CDN)
+    if (path === '/argon2.wasm') {
+      const binaryStr = atob(argon2WasmBase64);
+      const len = binaryStr.length;
+      const binary = new Uint8Array(len);
+      for (let i = 0; i < len; i++) binary[i] = binaryStr.charCodeAt(i);
+      return new Response(binary as unknown as string, {
+        status: 200,
+        headers: {
+          'Content-Type': 'application/wasm',
+          'Cache-Control': 'public, max-age=31536000, immutable',
+        },
+      });
+    }
+
+    if (path === '/argon2.js') {
+      return new Response(argon2Js, {
+        status: 200,
+        headers: {
+          'Content-Type': 'application/javascript; charset=utf-8',
+          'Cache-Control': 'public, max-age=31536000, immutable',
+        },
+      });
+    }
+
     // Serve crypto sandbox iframe (isolated origin via sandbox attribute in parent)
     if (path === '/crypto-sandbox') {
       return new Response(cryptoSandboxHtml, {
         status: 200,
         headers: {
           'Content-Type': 'text/html; charset=utf-8',
-          'Content-Security-Policy': "default-src 'self'; script-src 'self' 'unsafe-inline' https://unpkg.com; connect-src 'self' https://unpkg.com https://static.cloudflareinsights.com;",
+          'Content-Security-Policy': "default-src 'self'; script-src 'self' 'unsafe-inline'; connect-src 'self' https://static.cloudflareinsights.com;",
           'X-Content-Type-Options': 'nosniff',
           'Cache-Control': 'no-store',
         },
