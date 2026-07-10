@@ -2,7 +2,7 @@
 
 **后量子安全加密笔记 · Zero-Trust Encrypted Notes on Cloudflare Workers**
 
-[![Deploy to Cloudflare Workers](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/your-username/s-qrypt)
+[![Deploy to Cloudflare Workers](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/stop666two/S-Qrypt)
 
 S-Qrypt 是一个严格零信任、后量子安全的加密笔记保险箱，专为 Cloudflare Workers 无服务器平台与 D1 边缘数据库设计。
 
@@ -112,7 +112,7 @@ S-Qrypt 是一个严格零信任、后量子安全的加密笔记保险箱，专
 
 ```bash
 # 1. 克隆项目
-git clone https://github.com/your-username/s-qrypt.git
+git clone https://github.com/stop666two/S-Qrypt.git
 cd s-qrypt
 
 # 2. 安装依赖
