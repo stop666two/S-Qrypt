@@ -141,10 +141,13 @@ npm run setup</div>
 <script>
 function copyCmd(id) {
   const el = document.getElementById(id);
-  let text = el.textContent.replace('复制', '').trim();
+  const clone = el.cloneNode(true);
+  const btn = clone.querySelector('.copy-btn');
+  if (btn) btn.remove();
+  const text = clone.textContent.trim();
   navigator.clipboard.writeText(text).then(() => {
-    const btn = el.querySelector('.copy-btn');
-    if (btn) { btn.textContent = '已复制!'; setTimeout(() => { btn.textContent = '复制'; }, 2000); }
+    const b = el.querySelector('.copy-btn');
+    if (b) { b.textContent = '已复制!'; setTimeout(() => { b.textContent = '复制'; }, 2000); }
   });
 }
 </script>

@@ -369,6 +369,12 @@ self.addEventListener('fetch',e=>e.respondWith(fetch(e.request).catch(()=>new Re
       if (!body.encrypted_meta_packet || !body.encrypted_body) {
         return errorResponse('missing_fields');
       }
+      if (body.encrypted_meta_packet.length > 10000) {
+        return errorResponse('meta_too_large', 413);
+      }
+      if (body.encrypted_body.length > 2097152) {
+        return errorResponse('body_too_large', 413);
+      }
       if (body.is_test !== undefined) {
         const result = await env.DB.prepare(
           'UPDATE notes SET encrypted_meta_packet = ?, encrypted_body = ?, is_test = ? WHERE id = ?'
@@ -436,6 +442,7 @@ self.addEventListener('fetch',e=>e.respondWith(fetch(e.request).catch(()=>new Re
       let body: any;
       try { body = await request.json(); } catch { return errorResponse('invalid_json', 400); }
       if (!body.encrypted_entry || !body.fingerprint_hash) return errorResponse('missing_fields');
+      if (body.encrypted_entry.length > 5000) return errorResponse('entry_too_large', 413);
       await env.DB.prepare(
         'INSERT INTO audit_logs (encrypted_entry, fingerprint_hash) VALUES (?, ?)'
       ).bind(body.encrypted_entry, body.fingerprint_hash).run();
