@@ -258,9 +258,9 @@ self.addEventListener('fetch',e=>e.respondWith(fetch(e.request).catch(()=>new Re
 
       const offset = Math.max(0, parseInt(url.searchParams.get('offset') || '0'));
       const limit = Math.min(100, Math.max(1, parseInt(url.searchParams.get('limit') || '50')));
-      const totalRow = await env.DB.prepare('SELECT COUNT(*) as cnt FROM notes').first<{ cnt: number }>();
+      const totalRow = await env.DB.prepare("SELECT COUNT(*) as cnt FROM notes WHERE is_test != 1 AND deleted != 1").first<{ cnt: number }>();
       const rows = await env.DB.prepare(
-        'SELECT id, encrypted_meta_packet, is_test, deleted, created_at, updated_at FROM notes ORDER BY id ASC LIMIT ? OFFSET ?'
+        "SELECT id, encrypted_meta_packet, is_test, deleted, created_at, updated_at FROM notes WHERE is_test != 1 AND deleted != 1 ORDER BY id ASC LIMIT ? OFFSET ?"
       ).bind(limit, offset).all<{ id: number; encrypted_meta_packet: string; is_test: number; deleted: number }>();
       return jsonResponse({ notes: rows.results, total: totalRow?.cnt ?? 0, offset, limit });
     }
@@ -313,6 +313,8 @@ self.addEventListener('fetch',e=>e.respondWith(fetch(e.request).catch(()=>new Re
           'UPDATE notes SET encrypted_meta_packet = ?, encrypted_body = ?, is_test = ? WHERE id = ?'
         ).bind(body.encrypted_meta_packet, body.encrypted_body, body.is_test, noteId).run();
       if (result.meta.changes === 0) return errorResponse('not_found', 404);
+      // Also update updated_at for test note writes
+      await env.DB.prepare("UPDATE notes SET updated_at = datetime('now') WHERE id = ?").bind(noteId).run();
     } else {
       const result = await env.DB.prepare(
         "UPDATE notes SET encrypted_meta_packet = ?, encrypted_body = ?, updated_at = datetime('now') WHERE id = ?"

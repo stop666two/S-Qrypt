@@ -1,4 +1,4 @@
-export const cryptoSandboxHtml = `<!DOCTYPE html><html><head><meta charset="UTF-8"></head><body><script src="https://cdn.jsdelivr.net/npm/argon2-browser@1.2.1/lib/argon2.js"></script><script>
+export const cryptoSandboxHtml = `<!DOCTYPE html><html><head><meta charset="UTF-8"></head><body><script src="https://cdn.jsdelivr.net/npm/argon2-browser@1.18.0/dist/argon2.js" integrity="sha384-am7P6S/HiklM8ZO8Ihrv1tCPTFPGfEnKfUn8cqws88YeMDJAx8PJ3gCTdcS1XBuz" crossorigin="anonymous"></script><script>
 const ctx='S-Qrypt-v2:PreMix',ctxB=new TextEncoder().encode(ctx),saltB=new TextEncoder().encode('S-Qrypt-Final');
 function hex(b){return Array.from(new Uint8Array(b)).map(x=>x.toString(16).padStart(2,'0')).join('')}
 function b64(b){let s='';for(let i=0;i<b.length;i++)s+=String.fromCharCode(b[i]);return btoa(s)}

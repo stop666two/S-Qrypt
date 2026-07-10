@@ -1,15 +1,15 @@
 {
   "name": "s-qrypt",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "private": true,
   "scripts": {
     "build": "tsc --noEmit",
-    "deploy": "tsc --noEmit && node scripts/obfuscate.mjs && npm run db:migrations:apply && wrangler deploy",
+    "deploy": "tsc --noEmit && node scripts/obfuscate.mjs && wrangler deploy && git checkout -- src/",
+    "deploy:quick": "tsc --noEmit && wrangler deploy",
     "dev": "wrangler dev",
     "start": "wrangler dev",
     "test": "vitest",
-    "cf-typegen": "wrangler types",
-    "db:migrations:apply": "wrangler d1 migrations apply DB --remote"
+    "cf-typegen": "wrangler types"
   },
   "devDependencies": {
     "@cloudflare/vitest-pool-workers": "^0.12.4",

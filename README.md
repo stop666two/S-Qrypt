@@ -1,4 +1,4 @@
-# S-Qrypt v1.0.0
+# S-Qrypt v1.0.1
 
 **后量子安全加密笔记 · Zero-Trust Encrypted Notes on Cloudflare Workers**
 
@@ -125,12 +125,10 @@ npx wrangler login
 npx wrangler d1 create s-qrypt-db
 
 # 5. 将输出的 database_id 填入 wrangler.jsonc
-#   编辑 wrangler.jsonc，将 d1_databases[0].database_id 替换为实际 ID
+#   编辑 wrangler.jsonc，将 `d1_databases[0].database_id` 替换为实际 ID
+#   （本地开发时 ID 任意，wrangler 自动使用本地 SQLite）
 
-# 6. 执行数据库迁移
-npx wrangler d1 migrations apply DB --remote
-
-# 7. 部署
+# 6. 部署（Schema 由 Worker 启动时自动创建，无需手动迁移）
 npm run deploy
 ```
 
