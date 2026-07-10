@@ -4,7 +4,7 @@ interface Env {
 
 // Cloudflare Workers Runtime Types
 declare class Response {
-  constructor(body?: string | null, init?: ResponseInit);
+  constructor(body?: string | ArrayBuffer | null, init?: ResponseInit);
   readonly headers: Headers;
   readonly status: number;
   readonly ok: boolean;

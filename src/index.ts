@@ -5,6 +5,17 @@ import { argon2WasmBase64, argon2Js } from './argon2Files';
 
 declare function atob(s: string): string;
 
+let cachedWasm: ArrayBuffer | null = null;
+function arg2wasm(): ArrayBuffer {
+  if (cachedWasm) return cachedWasm;
+  const s = atob(argon2WasmBase64);
+  const len = s.length;
+  const b = new Uint8Array(len);
+  for (let i = 0; i < len; i++) b[i] = s.charCodeAt(i);
+  cachedWasm = b.buffer;
+  return cachedWasm;
+}
+
 const API_PREFIX = '/api';
 
 function jsonResponse(data: unknown, status = 200, extraHeaders?: Record<string, string>): Response {
@@ -175,16 +186,13 @@ self.addEventListener('fetch',e=>e.respondWith(fetch(e.request).catch(()=>new Re
       );
     }
 
-    // Self-hosted argon2 WASM (no external CDN)
+    // Self-hosted argon2 WASM (sandbox cross-origin compatible)
     if (path === '/argon2.wasm') {
-      const binaryStr = atob(argon2WasmBase64);
-      const len = binaryStr.length;
-      const binary = new Uint8Array(len);
-      for (let i = 0; i < len; i++) binary[i] = binaryStr.charCodeAt(i);
-      return new Response(binary as unknown as string, {
+      return new Response(arg2wasm(), {
         status: 200,
         headers: {
           'Content-Type': 'application/wasm',
+          'Access-Control-Allow-Origin': '*',
           'Cache-Control': 'public, max-age=31536000, immutable',
         },
       });
