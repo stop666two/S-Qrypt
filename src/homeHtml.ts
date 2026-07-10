@@ -227,7 +227,20 @@ input,textarea,button,select{font-family:inherit;font-size:inherit}
 <div style="padding:10px 24px;border-bottom:1px solid var(--border);display:flex;gap:8px;flex-wrap:wrap">
 <button id="audit-local" class="btn-audit-tab" style="background:var(--accent);color:#fff;border:none;padding:5px 14px;border-radius:6px;cursor:pointer;font-size:12px">本地日志</button>
 <button id="audit-remote" class="btn-audit-tab" style="background:var(--surface2);color:var(--text2);border:1px solid var(--border);padding:5px 14px;border-radius:6px;cursor:pointer;font-size:12px">远程日志</button>
-<span style="font-size:11px;color:var(--text3);flex:1;min-width:150px">加密日志，私钥离线解密: <code style="font-size:10px;background:var(--surface2);padding:2px 4px;border-radius:3px">echo "BASE64_ENTRY" | openssl base64 -d | openssl pkeyutl -decrypt -inkey private.pem -pkeyopt rsa_padding_mode:oaep -pkeyopt oaep_hash:sha256</code></span>
+<span style="font-size:11px;color:var(--text3);flex:1;min-width:200px">
+<b style="color:var(--text2);font-size:12px">离线解密方法</b><br>
+下载 JSON → 取一条 <code style="font-size:10px">encrypted</code> 值执行:<br>
+<code style="font-size:10px;background:var(--surface2);display:inline-block;padding:6px 8px;border-radius:4px;margin:4px 0;line-height:1.7">
+echo "BASE64字符串" | openssl base64 -d | openssl pkeyutl -decrypt \<br>
+&nbsp;&nbsp;-inkey private.pem \<br>
+&nbsp;&nbsp;-pkeyopt rsa_padding_mode:oaep \<br>
+&nbsp;&nbsp;-pkeyopt oaep_hash:sha256
+</code><br>
+<span style="font-size:10px;color:var(--text3)">
+参数: <code>base64 -d</code> 解码base64 → <code>pkeyutl -decrypt</code> 私钥解密 →<br>
+<code>oaep</code> 填充模式 + <code>sha256</code> 哈希，与浏览器 Web Crypto 一致
+</span>
+</span>
 <button id="audit-download" style="background:var(--accent);color:#fff;border:none;padding:5px 14px;border-radius:6px;cursor:pointer;font-size:12px;display:none">下载日志</button>
 </div>
 <div class="audit-body" id="audit-body"><div class="audit-empty">暂无日志记录</div></div>
