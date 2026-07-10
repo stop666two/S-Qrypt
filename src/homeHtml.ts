@@ -325,8 +325,12 @@ function b64dec(s) {
 }
 async function importRsaPub(pem) {
   const raw = b64dec(pem);
-  if (raw.length < 20) throw new Error('Base64 数据过短（' + raw.length + ' 字节），请检查 PEM 是否完整');
-  return await crypto.subtle.importKey('spki', raw, { name: 'RSA-OAEP', hash: 'SHA-256' }, false, ['encrypt']);
+  if (raw.length < 20) throw new Error('Base64 数据过短（' + raw.length + ' 字节），只支持 RSA 2048/4096 公钥（SPKI/PEM 格式）');
+  try {
+    return await crypto.subtle.importKey('spki', raw, { name: 'RSA-OAEP', hash: 'SHA-256' }, false, ['encrypt']);
+  } catch (e) {
+    throw new Error('密钥格式错误' + (e.name ? ' (' + e.name + ')' : '') + ' — 请确保粘贴的是 RSA 公钥（SPKI/PEM），而非私钥');
+  }
 }
 async function rsaEncrypt(pubKey, data) {
   const enc = await crypto.subtle.encrypt({ name: 'RSA-OAEP' }, pubKey, new TextEncoder().encode(data));
