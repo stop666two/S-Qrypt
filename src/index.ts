@@ -186,13 +186,24 @@ self.addEventListener('fetch',e=>e.respondWith(fetch(e.request).catch(()=>new Re
 
     // GET /api/init-check — check initialization status
     if (path === `${API_PREFIX}/init-check`) {
-      const config = await env.DB.prepare(
-        'SELECT init_completed, kdf_version FROM config WHERE id = ?'
-      ).bind('app_config').first<{ init_completed: number; kdf_version: number }>();
-      return jsonResponse({
-        initialized: config ? config.init_completed === 1 : false,
-        kdf_version: config?.kdf_version ?? 1,
-      });
+      let dbBound = false;
+      try {
+        const config = await env.DB.prepare(
+          'SELECT init_completed, kdf_version FROM config WHERE id = ?'
+        ).bind('app_config').first<{ init_completed: number; kdf_version: number }>();
+        dbBound = true;
+        return jsonResponse({
+          initialized: config ? config.init_completed === 1 : false,
+          kdf_version: config?.kdf_version ?? 1,
+          db_bound: true,
+        });
+      } catch (e) {
+        return jsonResponse({
+          initialized: false,
+          kdf_version: 1,
+          db_bound: false,
+        });
+      }
     }
 
     // GET /api/token — get verification token

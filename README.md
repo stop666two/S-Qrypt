@@ -2,7 +2,7 @@
 
 **后量子安全加密笔记 · Zero-Trust Encrypted Notes on Cloudflare Workers**
 
-[![Deploy with Workers](https://img.shields.io/badge/Deploy-Cloudflare_Workers-f38020?logo=cloudflare&style=for-the-badge)](https://dash.cloudflare.com/?to=workers-and-pages)
+[![Deploy to Cloudflare Workers](https://img.shields.io/badge/Deploy_to-Cloudflare_Workers-f38020?logo=cloudflare&style=for-the-badge)](https://github.com/stop666two/S-Qrypt/actions/workflows/deploy.yml)
 
 S-Qrypt 是一个严格零信任、后量子安全的加密笔记保险箱，专为 Cloudflare Workers 无服务器平台与 D1 边缘数据库设计。
 
@@ -92,7 +92,7 @@ S-Qrypt 是一个严格零信任、后量子安全的加密笔记保险箱，专
 
 ## 快速部署
 
-### 一键部署
+### 一键部署（CLI）
 
 ```bash
 # 1. 克隆项目
@@ -114,6 +114,12 @@ npm run setup
 2. 将数据库 ID 写入 `wrangler.jsonc`
 3. 部署 Worker
 4. 恢复 `wrangler.jsonc` 占位符（防止敏感信息泄漏）
+
+### CI/CD 自动部署（GitHub Actions）
+
+顶部点击 **Deploy to Cloudflare Workers** 按钮 → 将仓库 fork 到你的 GitHub → 在 Settings → Secrets 添加 `CLOUDFLARE_API_TOKEN` → 推送 `main` 分支自动部署。
+
+### 手动部署
 
 ### 手动部署
 
