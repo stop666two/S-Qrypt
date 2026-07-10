@@ -1,0 +1,15 @@
+CREATE TABLE IF NOT EXISTS config (
+  id TEXT PRIMARY KEY,
+  verification_token TEXT NOT NULL,
+  operation_token_hash TEXT NOT NULL DEFAULT '',
+  init_completed INTEGER NOT NULL DEFAULT 0,
+  kdf_version INTEGER NOT NULL DEFAULT 1
+);
+
+CREATE TABLE IF NOT EXISTS notes (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  encrypted_meta_packet TEXT NOT NULL DEFAULT '',
+  encrypted_body TEXT NOT NULL DEFAULT '',
+  is_test INTEGER NOT NULL DEFAULT 0,
+  deleted INTEGER NOT NULL DEFAULT 0
+);

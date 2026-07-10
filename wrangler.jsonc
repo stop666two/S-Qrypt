@@ -1,0 +1,17 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "s-qrypt",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-07-10",
+  "compatibility_flags": ["nodejs_compat"],
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "s-qrypt-db",
+      "database_id": "local-dev-dummy-id"
+    }
+  ],
+  "observability": {
+    "enabled": true
+  }
+}
