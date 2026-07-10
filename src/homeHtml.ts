@@ -227,7 +227,7 @@ input,textarea,button,select{font-family:inherit;font-size:inherit}
 <div style="padding:10px 24px;border-bottom:1px solid var(--border);display:flex;gap:8px;flex-wrap:wrap">
 <button id="audit-local" class="btn-audit-tab" style="background:var(--accent);color:#fff;border:none;padding:5px 14px;border-radius:6px;cursor:pointer;font-size:12px">本地日志</button>
 <button id="audit-remote" class="btn-audit-tab" style="background:var(--surface2);color:var(--text2);border:1px solid var(--border);padding:5px 14px;border-radius:6px;cursor:pointer;font-size:12px">远程日志</button>
-<span style="font-size:11px;color:var(--text3);flex:1;min-width:150px">加密日志，私钥解密: <code style="font-size:10px;background:var(--surface2);padding:2px 4px;border-radius:3px">openssl pkeyutl -decrypt -inkey private.pem -in log_entry.bin</code></span>
+<span style="font-size:11px;color:var(--text3);flex:1;min-width:150px">加密日志，私钥离线解密: <code style="font-size:10px;background:var(--surface2);padding:2px 4px;border-radius:3px">echo "BASE64_ENTRY" | openssl base64 -d | openssl pkeyutl -decrypt -inkey private.pem -pkeyopt rsa_padding_mode:oaep -pkeyopt oaep_hash:sha256</code></span>
 <button id="audit-download" style="background:var(--accent);color:#fff;border:none;padding:5px 14px;border-radius:6px;cursor:pointer;font-size:12px;display:none">下载日志</button>
 </div>
 <div class="audit-body" id="audit-body"><div class="audit-empty">暂无日志记录</div></div>
