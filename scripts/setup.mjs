@@ -38,14 +38,12 @@ async function getOrCreateDatabase() {
       return dbId;
     }
   } catch (e) {
-    // DB already exists — continue to list
-    if (e.stdout && e.stdout.includes('already exists')) {
+    const msg = [e.stdout, e.stderr, e.message].filter(Boolean).join('\n');
+    if (msg.includes('already exists')) {
       console.log('   ℹ️  数据库已存在，尝试获取 ID...');
+    } else if (msg.includes('Authentication error') || msg.includes('10000')) {
+      throw new Error('Cloudflare 认证失败，请先运行: npx wrangler login');
     } else {
-      const msg = e.stderr || e.message || '';
-      if (msg.includes('Authentication error') || msg.includes('10000')) {
-        throw new Error('Cloudflare 认证失败，请先运行: npx wrangler login');
-      }
       throw e;
     }
   }
@@ -61,7 +59,7 @@ async function getOrCreateDatabase() {
       return dbId;
     }
   } catch (e) {
-    const msg = e.stderr || e.message || '';
+    const msg = [e.stdout, e.stderr, e.message].filter(Boolean).join('\n');
     if (msg.includes('Authentication error') || msg.includes('10000')) {
       throw new Error('Cloudflare 认证失败，请先运行: npx wrangler login');
     }
