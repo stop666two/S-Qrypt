@@ -76,6 +76,7 @@ async function ensureSchema(db: D1Database): Promise<void> {
   await db.exec("CREATE TABLE IF NOT EXISTS auth_limits (key TEXT PRIMARY KEY, attempts INTEGER NOT NULL DEFAULT 0, window_start INTEGER NOT NULL, locked_until INTEGER NOT NULL DEFAULT 0)");
   await db.exec("CREATE TABLE IF NOT EXISTS audit_logs (id INTEGER PRIMARY KEY AUTOINCREMENT, encrypted_entry TEXT NOT NULL, fingerprint_hash TEXT NOT NULL, created_at TEXT DEFAULT (datetime('now')))");
   await db.exec("CREATE INDEX IF NOT EXISTS idx_audit_created ON audit_logs(created_at)");
+  try { await db.exec("CREATE INDEX IF NOT EXISTS idx_notes_active ON notes(is_test, deleted, id)"); } catch (_) {}
 }
 
 const RATE_MAX = 8;
@@ -317,16 +318,22 @@ self.addEventListener('fetch',e=>e.respondWith(fetch(e.request).catch(()=>new Re
       return jsonResponse({ status: 'ok' }, 201);
     }
 
-    // GET /api/notes — list all notes metadata
+    // GET /api/notes — list notes metadata
     if (path === `${API_PREFIX}/notes` && method === 'GET') {
       const authErr = await requireVerificationToken(request, env.DB);
       if (authErr) return authErr;
 
       const offset = Math.max(0, parseInt(url.searchParams.get('offset') || '0'));
       const limit = Math.min(100, Math.max(1, parseInt(url.searchParams.get('limit') || '50')));
-      const totalRow = await env.DB.prepare("SELECT COUNT(*) as cnt FROM notes WHERE is_test != 1 AND deleted != 1").first<{ cnt: number }>();
+      const showDeleted = url.searchParams.get('deleted') === '1';
+      const whereClause = showDeleted
+        ? "WHERE is_test != 1 AND deleted = 1"
+        : "WHERE is_test != 1 AND deleted != 1";
+      const totalRow = await env.DB.prepare(
+        `SELECT COUNT(*) as cnt FROM notes ${whereClause}`
+      ).first<{ cnt: number }>();
       const rows = await env.DB.prepare(
-        "SELECT id, encrypted_meta_packet, is_test, deleted, created_at, updated_at FROM notes WHERE is_test != 1 AND deleted != 1 ORDER BY id ASC LIMIT ? OFFSET ?"
+        `SELECT id, encrypted_meta_packet, is_test, deleted, created_at, updated_at FROM notes ${whereClause} ORDER BY id ASC LIMIT ? OFFSET ?`
       ).bind(limit, offset).all<{ id: number; encrypted_meta_packet: string; is_test: number; deleted: number }>();
       return jsonResponse({ notes: rows.results, total: totalRow?.cnt ?? 0, offset, limit });
     }
