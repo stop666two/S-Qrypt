@@ -310,7 +310,7 @@ function getDeviceFP() {
 }
 function fpHash(fp) { return hex(sha256(new TextEncoder().encode(JSON.stringify(fp)))).slice(0,16) }
 function b64dec(s) {
-  s = s.replace(/[^A-Za-z0-9+/=]/g, '');
+  s = s.replace(/-----BEGIN[^-]+-----/g, '').replace(/-----END[^-]+-----/g, '').replace(/\s/g, '');
   if (!s) throw new Error('Base64 数据为空');
   while (s.length % 4) s += '=';
   return Uint8Array.from(atob(s), c => c.charCodeAt(0));
