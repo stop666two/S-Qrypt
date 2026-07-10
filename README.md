@@ -94,7 +94,7 @@ S-Qrypt 是一个严格零信任、后量子安全的加密笔记保险箱，专
 
 ### 一键部署
 
-[![Deploy to Cloudflare Workers](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/your-username/s-qrypt)
+[![Deploy to Cloudflare Workers](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/stop666two/S-Qrypt)
 
 点击上方按钮，授权 Cloudflare 后自动完成：
 1. 创建 Worker 脚本
