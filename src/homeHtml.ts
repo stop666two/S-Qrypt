@@ -273,7 +273,7 @@ async function hkdfE(prk,info,len){const ib=typeof info==='string'?new TextEncod
 // Sandbox iframe proxy
 let cryptoFrame=null;let cryptoFrameId=0;const cryptoFramePending=new Map();let useSandbox=false;
 async function initCF(){if(cryptoFrame)return;const frame=document.createElement('iframe');frame.src='/crypto-sandbox';frame.sandbox='allow-scripts';frame.style.display='none';document.body.appendChild(frame);await new Promise((r,j)=>{const t=setTimeout(()=>j(new Error('timeout')),10000);frame.onload=()=>{clearTimeout(t);cryptoFrame=frame;r()}});window.addEventListener('message',e=>{if(e.source!==frame.contentWindow)return;const m=e.data,p=cryptoFramePending.get(m.id);if(!p)return;cryptoFramePending.delete(m.id);if(m.error)p.reject(new Error(m.error));else p.resolve(m.result)})}
-function frameCall(cmd,...args){return new Promise((r,j)=>{const id=++cryptoFrameId;cryptoFramePending.set(id,{resolve:r,reject:j});const origin=self.origin||'http://127.0.0.1:8787';cryptoFrame.contentWindow.postMessage({id,cmd,args},origin)})}
+function frameCall(cmd,...args){return new Promise((r,j)=>{const id=++cryptoFrameId;cryptoFramePending.set(id,{resolve:r,reject:j});cryptoFrame.contentWindow.postMessage({id,cmd,args},'*')})}
 initCF().then(()=>{useSandbox=true}).catch(()=>{useSandbox=false});
 // Adaptive params
 function getAP(boost){const c=navigator.hardwareConcurrency||4,m=navigator.deviceMemory||8;let mb=32,ro=128;if(boost){mb=64;ro=200}else if(c>=8&&m>=8){mb=32;ro=128}else if(c>=4&&m>=4){mb=24;ro=80}else{mb=16;ro=60}return{MS:mb*1024*1024,RO:ro,mb,co:c}}
