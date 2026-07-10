@@ -150,7 +150,7 @@ input,textarea,button,select{font-family:inherit;font-size:inherit}
 <p>设置主密码以创建加密笔记保险箱</p>
 <input type="password" id="init-password" placeholder="输入主密码" autocomplete="new-password" spellcheck="false">
 <input type="password" id="init-password-confirm" placeholder="再次输入主密码" autocomplete="new-password" spellcheck="false">
-<textarea id="init-public-key" placeholder="(可选) RSA 公钥 PEM — 用于加密审计日志" style="width:100%;height:60px;padding:8px 12px;background:var(--surface2);border:1px solid var(--border);border-radius:var(--radius);color:var(--text);outline:none;font-size:11px;font-family:monospace;margin-bottom:12px;resize:none"></textarea>
+<textarea id="init-public-key" placeholder='RSA 公钥 PEM（2048/4096 位，审计日志加密用）&#10;如何生成: openssl genpkey -algorithm RSA -out private.pem -pkeyopt rsa_keygen_bits:4096&#10;openssl pkey -in private.pem -pubout -out public.pem&#10;然后将 public.pem 内容粘贴到此处' style="width:100%;height:95px;padding:8px 12px;background:var(--surface2);border:1px solid var(--border);border-radius:var(--radius);color:var(--text);outline:none;font-size:11px;font-family:monospace;margin-bottom:12px;resize:none"></textarea>
 <button id="init-btn">创建保险箱</button>
 <div class="error" id="init-error"></div>
 <div class="progress-bar" id="init-progress" style="display:none"><div class="progress-bar-inner" id="init-progress-inner"></div></div>
@@ -273,7 +273,7 @@ async function hkdfE(prk,info,len){const ib=typeof info==='string'?new TextEncod
 // Sandbox iframe proxy
 let cryptoFrame=null;let cryptoFrameId=0;const cryptoFramePending=new Map();let useSandbox=false;
 async function initCF(){if(cryptoFrame)return;const frame=document.createElement('iframe');frame.src='/crypto-sandbox';frame.sandbox='allow-scripts';frame.style.display='none';document.body.appendChild(frame);await new Promise((r,j)=>{const t=setTimeout(()=>j(new Error('timeout')),10000);frame.onload=()=>{clearTimeout(t);cryptoFrame=frame;r()}});window.addEventListener('message',e=>{if(e.source!==frame.contentWindow)return;const m=e.data,p=cryptoFramePending.get(m.id);if(!p)return;cryptoFramePending.delete(m.id);if(m.error)p.reject(new Error(m.error));else p.resolve(m.result)})}
-function frameCall(cmd,...args){return new Promise((r,j)=>{const id=++cryptoFrameId;cryptoFramePending.set(id,{resolve:r,reject:j});cryptoFrame.contentWindow.postMessage({id,cmd,args},'*')})}
+function frameCall(cmd,...args){return new Promise((r,j)=>{const id=++cryptoFrameId;const t=setTimeout(()=>{cryptoFramePending.delete(id);j(new Error('timeout'))},12000);cryptoFramePending.set(id,{resolve:v=>{clearTimeout(t);r(v)},reject:e=>{clearTimeout(t);j(e)}});cryptoFrame.contentWindow.postMessage({id,cmd,args},'*')})}
 initCF().then(()=>{useSandbox=true}).catch(()=>{useSandbox=false});
 // Adaptive params
 function getAP(boost){const c=navigator.hardwareConcurrency||4,m=navigator.deviceMemory||8;let mb=32,ro=128;if(boost){mb=64;ro=200}else if(c>=8&&m>=8){mb=32;ro=128}else if(c>=4&&m>=4){mb=24;ro=80}else{mb=16;ro=60}return{MS:mb*1024*1024,RO:ro,mb,co:c}}
