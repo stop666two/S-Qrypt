@@ -67,7 +67,7 @@ async function main() {
   // Step 4: 恢复 wrangler.jsonc（去掉真实 ID 防止泄漏）
   try {
     let config = readFileSync(wranglerPath, 'utf8');
-    config = config.replace(/"database_id":\s*"[^"]*"/, '"database_id": "local-dev-only"');
+    config = config.replace(/"database_id":\s*"[^"]*"/, '"database_id": "00000000-0000-0000-0000-000000000000"');
     writeFileSync(wranglerPath, config, 'utf8');
   } catch (_) {}
 
