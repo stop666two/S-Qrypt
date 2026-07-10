@@ -310,26 +310,25 @@ function getDeviceFP() {
 }
 function fpHash(fp) { return hex(sha256(new TextEncoder().encode(JSON.stringify(fp)))).slice(0,16) }
 function b64dec(s) {
-  const map = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
   s = s.replace(/[^A-Za-z0-9+/=]/g, '');
   if (!s) throw new Error('Base64 数据为空');
-  const r = [];
-  for (let i = 0; i < s.length; i += 4) {
-    const c = s.slice(i, Math.min(i + 4, s.length));
-    const e = [0, 1, 2, 3].map(j => { const p = map.indexOf(c[j]); return p >= 0 ? p : c[j] === '=' ? 0 : 0; });
-    r.push((e[0] << 2) | (e[1] >> 4));
-    if (c[2] !== '=') r.push(((e[1] & 15) << 4) | (e[2] >> 2));
-    if (c[3] !== '=') r.push(((e[2] & 3) << 6) | e[3]);
-  }
-  return new Uint8Array(r);
+  while (s.length % 4) s += '=';
+  return Uint8Array.from(atob(s), c => c.charCodeAt(0));
 }
 async function importRsaPub(pem) {
-  const raw = b64dec(pem);
-  if (raw.length < 20) throw new Error('Base64 数据过短（' + raw.length + ' 字节），只支持 RSA 2048/4096 公钥（SPKI/PEM 格式）');
+  let raw;
+  try {
+    raw = b64dec(pem);
+  } catch (e) {
+    throw new Error('Base64 解码失败' + (e.message ? ': ' + e.message : ''));
+  }
+  if (raw.length < 20) throw new Error('数据过短（' + raw.length + ' 字节），请粘贴完整的 RSA 2048/4096 公钥 PEM');
+  if (raw[0] !== 0x30) throw new Error('数据首字节为 0x' + raw[0].toString(16) + '，不是有效的 SPKI/DER 格式');
   try {
     return await crypto.subtle.importKey('spki', raw, { name: 'RSA-OAEP', hash: 'SHA-256' }, false, ['encrypt']);
   } catch (e) {
-    throw new Error('密钥格式错误' + (e.name ? ' (' + e.name + ')' : '') + ' — 请确保粘贴的是 RSA 公钥（SPKI/PEM），而非私钥');
+    const hint = raw[0] === 0x30 && (raw[1] & 0x80) ? '密钥内容已正确解码，但 Web Crypto 拒绝 — 可能不是 RSA 密钥' : '密钥格式异常';
+    throw new Error(hint + (e.name ? ' (' + e.name + ')' : ''));
   }
 }
 async function rsaEncrypt(pubKey, data) {
