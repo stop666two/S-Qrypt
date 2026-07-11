@@ -103,6 +103,8 @@ npx wrangler login
 npm run setup
 ```
 
+`npx wrangler login` 需要提前登录cloudflare，然后执行后会自动打开默认浏览器进行授权，如果不是这个浏览器请回到命令行会出现网站，复制粘贴即可。如果提示LocalHost无法连接就是动作太慢，要重新运行命令。
+
 `npm run setup` 自动完成：创建 D1 数据库 → 更新配置 → 部署 Worker → 恢复占位符。
 
 ### ⚡ GitHub Actions 自动部署
