@@ -140,44 +140,160 @@ npm run setup      # 一键 D1 创建 + 部署
 
 ---
 
+## 技术细节
+
+### 密码学架构
+
+```
+密码输入
+  │
+  ├→ SHA-224 ──→ 加 16B 随机盐 ──→ SHA-256 ──→ verification_token (服务端存储)
+  │                                              ↑ 用于 API 认证、频率限制、审计鉴权
+  │
+  └→ HMAC-SHA512 预混合 (128 轮)
+      │
+      ├→ AES-CTR 内存填充 (自适应 16-64MB)
+      ├→ SHA-512/SHA-256/HMAC 混合混淆 (60-200 轮)
+      ├→ Merkle 树摘要 (256 片)
+      ├→ Argon2id WASM 混合 (可选，自动降级)
+      └→ HKDF-Expand ──→ MK (256 字节主密钥)
+           │
+           ├→ HKDF-Expand(MK, "op-auth") → operation_token (写操作授权)
+           │
+           ├→ deriveKA(MK, id) → 2048-bit KA (元数据 AES-GCM 密钥)
+           │     └─ 128 轮 HMAC-SHA512 反馈链
+           │
+           ├→ deriveKB(MK, id) → 2048-bit KB (正文 AES-GCM 密钥)
+           │     └─ AES-CBC 自加密链 (64 轮)
+           │
+           └→ deriveKC(MK, id) → 2048-bit KC (完整性密钥)
+                 └─ Merkle 树 + SHA-512 + HKDF
+```
+
+### 安全机制
+
+| 层次 | 机制 | 说明 |
+|------|------|------|
+| **传输** | HTTPS + CSP + COOP + COEP | 防 XSS、防 Spectre、防中间人 |
+| **存储** | AES-256-GCM 认证加密 | 每次加密随机 IV，认证标签防篡改 |
+| **密钥** | 沙箱 iframe 隔离 | 密钥仅在线性内存中，主页面不可直接访问 |
+| **令牌** | HKDF 派生 operation_token | 每次写操作需携带，防 CSRF/越权 |
+| **频率** | 登录 + 写操作双重 Rate Limit | IP 维度 8 次/5 分钟自动锁定 10 分钟 |
+| **认证** | 随机盐值 verification_token | 防御彩虹表攻击，旧保险箱自动兼容 |
+| **审计** | HMAC 签名链 + RSA-OAEP 加密 | 防篡改审计日志，私钥离线解密 |
+| **侧信道** | 恒定时间比较 + 随机延迟填充 | 防御时序攻击 |
+
+### 沙箱隔离详解
+
+密码学沙箱 iframe 使用 `sandbox="allow-scripts"` 属性，不包含 `allow-same-origin`：
+- **origin 为 null**：主页面无法通过 `postMessage` 目标 origin 泄露数据
+- **密钥仅在线性内存**：沙箱页面关闭后密钥自动消失
+- **操作隔离**：所有密码学操作（密钥派生、加解密）在沙箱内完成，主页面只能获得结果
+- **Argon2id 自托管**：WASM 二进制通过 Worker 路由 `/argon2.wasm` 同源加载，无外部 CDN 依赖
+- **12 秒超时**：沙箱无响应时自动降级为纯软件模式，不影响可用性
+
+### 数据流
+
+```
+浏览器 (加密操作)                  Cloudflare Worker              D1 Database
+      │                                  │                          │
+      │── POST /api/init ────────────────→│── INSERT config ────────→│
+      │   {verification_token, salt}      │                          │
+      │                                  │                          │
+      │── PUT /api/note/:id ─────────────→│── UPDATE notes ─────────→│
+      │   {operation_token, encrypted_*}  │  密文存储               │
+      │                                  │                          │
+      │── POST /api/audit/log ───────────→│── INSERT audit_logs ────→│
+      │   {verification_token,            │  加密存储               │
+      │    encrypted_entry, fp_hash}      │                          │
+      │                                  │                          │
+      │── GET /api/note/:id ←────────────│── SELECT ────────────────│
+      │   密文返回                        │  返回密文               │
+      │→ 浏览器 AES-256-GCM 解密          │                          │
+```
+
+### 审计日志详解
+
+审计日志使用 RSA-OAEP（SHA-256）加密：
+1. 浏览器收集事件 `{ts, type, detail, fp}` → JSON 序列化
+2. 用 RSA 公钥 `crypto.subtle.encrypt({name:'RSA-OAEP', hash:'SHA-256'})` 加密
+3. Base64 编码 → POST 到 `/api/audit/log`
+4. 服务端存储密文，不接触明文
+5. 导出 JSON 后，客户端用 openssl 离线解密：
+
+```bash
+echo "BASE64_ENTRY" | openssl base64 -d | openssl pkeyutl -decrypt \
+  -inkey private.pem \
+  -pkeyopt rsa_padding_mode:oaep \
+  -pkeyopt oaep_hash:sha256
+```
+
+每条日志包含浏览器指纹：UA、平台、屏幕分辨率×色深、时区、硬件并发数、内存、触摸支持。
+
+---
+
 ## API 文档
 
-所有端点前缀为 `/api`，请求和响应均为 `application/json`。
+所有端点前缀为 `/api`，请求和响应均为 `application/json`。所有写操作需携带 `operation_token`（HKDF 派生）。读操作需携带 `X-Verification-Token` 请求头。频率限制基于 IP 地址。
+
+### 认证头
+
+```
+X-Verification-Token: <hex_token>    # 所有 GET 请求（除 /api/init-check）
+operation_token: <hex_token>          # 所有 POST/PUT/PATCH/DELETE 请求体字段
+```
 
 ### 初始化与认证
-| 方法 | 路径 | 说明 |
-|------|------|------|
-| `GET` | `/api/init-check` | 检查初始化状态 |
-| `GET` | `/api/token` | 获取验证令牌（含盐值，频率限制） |
-| `POST` | `/api/init` | 保险箱初始化（含盐值） |
+
+| 方法 | 路径 | 认证 | 说明 |
+|------|------|------|------|
+| `GET` | `/api/init-check` | 无 | 返回 `{initialized, db_bound, kdf_version}` |
+| `GET` | `/api/token` | 频率限制 | 返回 `{verification_token, salt?}`。salt 仅新保险箱有。频率: 8次/5分钟 |
+| `POST` | `/api/init` | operation_token | 初始化保险箱。请求体: `{verification_token, salt, operation_token_hash, kdf_version}` |
 
 ### 笔记操作
-| 方法 | 路径 | 说明 |
-|------|------|------|
-| `GET` | `/api/notes?offset=0&limit=50&deleted=1` | 笔记列表（可选 `deleted=1` 回收站） |
-| `POST` | `/api/note` | 创建笔记（需 `operation_token`） |
-| `GET` | `/api/note/:id` | 获取笔记 |
-| `PUT` | `/api/note/:id` | 更新笔记（需 `operation_token`，大小限制 2MB） |
-| `PATCH` | `/api/note/:id/soft-delete` | 软删除（需 `operation_token`） |
-| `PATCH` | `/api/note/:id/restore` | 恢复（需 `operation_token`） |
-| `DELETE` | `/api/note/:id` | 硬删除（需 `operation_token`） |
+
+| 方法 | 路径 | 认证 | 说明 |
+|------|------|------|------|
+| `GET` | `/api/notes?offset=0&limit=50&deleted=1` | X-Verification-Token | 笔记列表，`deleted=1` 查看回收站 |
+| `POST` | `/api/note` | operation_token | 创建空白笔记，返回 `{id}` |
+| `GET` | `/api/note/:id` | X-Verification-Token | 获取单条笔记（含加密元数据和正文） |
+| `PUT` | `/api/note/:id` | operation_token | 更新笔记。body ≤2MB，meta ≤10KB |
+| `PATCH` | `/api/note/:id/soft-delete` | operation_token | 软删除（deleted=1） |
+| `PATCH` | `/api/note/:id/restore` | operation_token | 恢复软删除（deleted=0） |
+| `DELETE` | `/api/note/:id` | operation_token | 硬删除 |
 
 ### 审计日志
-| 方法 | 路径 | 说明 |
-|------|------|------|
-| `POST` | `/api/audit/log` | 提交加密日志条目 |
-| `GET` | `/api/audit/logs?limit=50` | 获取加密日志（需验证令牌） |
 
-### PWA / 其他
-| 路径 | 说明 |
-|------|------|
-| `/manifest.webmanifest` | PWA 清单 |
-| `/sw.js` | Service Worker |
-| `/app-icon.svg` | 应用图标 |
-| `/crypto-sandbox` | 密码学沙箱 iframe |
-| `/deploy` | 部署指南页 |
-| `/argon2.js` | 自托管 argon2 WASM 加载器 |
-| `/argon2.wasm` | 自托管 argon2 WASM 二进制 |
+| 方法 | 路径 | 认证 | 说明 |
+|------|------|------|------|
+| `POST` | `/api/audit/log` | X-Verification-Token | 提交 RSA 加密的日志条目。body: `{encrypted_entry (≤5KB), fingerprint_hash}` |
+| `GET` | `/api/audit/logs?limit=50` | X-Verification-Token | 获取加密日志列表。返回 `{entries: [{id, encrypted_entry, created_at}], total}` |
+
+### 静态路由（无需认证）
+
+| 路径 | Content-Type | 说明 |
+|------|-------------|------|
+| `/` | text/html | 主页面 SPA |
+| `/deploy` | text/html | 部署指南页 |
+| `/crypto-sandbox` | text/html | 密码学沙箱 iframe |
+| `/argon2.js` | application/javascript | argon2 WASM 加载器（自托管） |
+| `/argon2.wasm` | application/wasm | argon2 WASM 二进制 |
+| `/manifest.webmanifest` | application/json | PWA 清单 |
+| `/sw.js` | application/javascript | Service Worker |
+| `/app-icon.svg` | image/svg+xml | 应用图标 |
+
+### 错误码
+
+| 状态码 | error 字段 | 说明 |
+|--------|-----------|------|
+| 400 | `invalid_json`, `missing_fields`, `invalid_token` | 请求格式错误 |
+| 401 | `unauthorized` | X-Verification-Token 无效 |
+| 403 | `forbidden`, `forbidden_origin` | operation_token 无效或 CSRF 拦截 |
+| 404 | `not_found`, `not_initialized` | 资源不存在或未初始化 |
+| 409 | `already_initialized` | 保险箱已初始化 |
+| 413 | `meta_too_large`, `body_too_large`, `entry_too_large` | 数据超限 |
+| 429 | `rate_limited` | 频率限制（含 `retry_after` 秒数） |
 
 ---
 

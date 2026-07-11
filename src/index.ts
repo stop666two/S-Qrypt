@@ -473,8 +473,10 @@ self.addEventListener('fetch',e=>e.respondWith(fetch(e.request).catch(()=>new Re
       return jsonResponse({ status: 'soft_deleted' });
     }
 
-    // POST /api/audit/log — submit encrypted audit entry
+    // POST /api/audit/log — submit encrypted audit entry (needs auth)
     if (path === `${API_PREFIX}/audit/log` && method === 'POST') {
+      const authErr = await requireVerificationToken(request, env.DB);
+      if (authErr) return authErr;
       let body: any;
       try { body = await request.json(); } catch { return errorResponse('invalid_json', 400); }
       if (!validateString(body?.encrypted_entry, 5000)) return errorResponse('invalid_entry', 400);
