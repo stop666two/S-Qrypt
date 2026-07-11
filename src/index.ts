@@ -298,6 +298,7 @@ self.addEventListener('fetch',e=>e.respondWith(fetch(e.request).catch(()=>new Re
       if (!body.verification_token) return errorResponse('missing_verification_token');
       if (!body.operation_token_hash) return errorResponse('missing_operation_token_hash');
 
+      await env.DB.exec("DELETE FROM notes WHERE is_test = 1");
       await env.DB.prepare(
         `INSERT INTO config (id, verification_token, operation_token_hash, init_completed, kdf_version, salt)
          VALUES (?, ?, ?, 1, ?, ?)
@@ -387,19 +388,15 @@ self.addEventListener('fetch',e=>e.respondWith(fetch(e.request).catch(()=>new Re
       if (body.encrypted_body.length > 2097152) {
         return errorResponse('body_too_large', 413);
       }
-      if (body.is_test !== undefined) {
-        const result = await env.DB.prepare(
-          'UPDATE notes SET encrypted_meta_packet = ?, encrypted_body = ?, is_test = ? WHERE id = ?'
-        ).bind(body.encrypted_meta_packet, body.encrypted_body, body.is_test, noteId).run();
-      if (result.meta.changes === 0) return errorResponse('not_found', 404);
-      // Also update updated_at for test note writes
-      await env.DB.prepare("UPDATE notes SET updated_at = datetime('now') WHERE id = ?").bind(noteId).run();
-    } else {
       const result = await env.DB.prepare(
-        "UPDATE notes SET encrypted_meta_packet = ?, encrypted_body = ?, updated_at = datetime('now') WHERE id = ?"
-      ).bind(body.encrypted_meta_packet, body.encrypted_body, noteId).run();
-        if (result.meta.changes === 0) return errorResponse('not_found', 404);
-      }
+        "UPDATE notes SET encrypted_meta_packet = ?, encrypted_body = ?, updated_at = datetime('now')" +
+        (body.is_test !== undefined ? ", is_test = ?" : "") + " WHERE id = ?"
+      ).bind(
+        body.encrypted_meta_packet, body.encrypted_body,
+        ...(body.is_test !== undefined ? [body.is_test] : []),
+        noteId
+      ).run();
+      if (result.meta.changes === 0) return errorResponse('not_found', 404);
       return jsonResponse({ status: 'updated' });
     }
 
