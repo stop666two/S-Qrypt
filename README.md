@@ -1,4 +1,4 @@
-# S-Qrypt v1.0.1
+# S-Qrypt
 
 **后量子安全加密笔记 · Zero-Trust Encrypted Notes on Cloudflare Workers**
 
@@ -30,14 +30,14 @@ S-Qrypt 是一个严格零信任、后量子安全的加密笔记保险箱，专
 |------|------|
 | **零信任架构** | 密码、主密钥、明文永不出浏览器 |
 | **后量子安全** | 2048 位对称密钥，Grover 算法下等效 1024 位安全强度 |
-| **三异构笔记密钥** | KA（回旋哈希链）、KB（AES-CBC 自加密链）、KC（Merkle 树）三种完全不同的派生方式 |
+| **三异构笔记密钥** | KA/KB/KC 三种不同派生方式，单一算法被攻破不影响其他密钥 |
 | **AES-256-GCM 认证加密** | 每次加密生成随机 IV，认证标签防篡改 |
-| **沙箱 iframe 隔离** | 密码学操作在独立 iframe（`sandbox="allow-scripts"`）中执行，密钥不进入主页面 JS 作用域 |
-| **Argon2id 混合增强** | 浏览器支持时自动使用 Argon2id WASM 混合主密钥派生 |
-| **操作授权令牌** | 所有写操作需携带 HKDF 派生令牌，防越权删除 |
-| **认证频率限制** | 同一 IP 8 次/5 分钟失败后锁定 10 分钟 |
+| **沙箱 iframe 隔离** | 密码学操作在独立 sandbox iframe 中执行，密钥不进入主页面 JS 作用域 |
+| **Argon2id 混合增强** | 自动使用 Argon2id WASM 混合主密钥派生，浏览器不支持时自动降级 |
+| **操作授权令牌** | 所有写操作需携带 HKDF 派生一次性令牌，防越权操作 |
+| **多级频率限制** | 登录 + 写操作双重频率限制，同一 IP 限制后锁定 |
 | **抗侧信道** | 恒定时间比较 + 随机延迟填充 + CSP/COOP/COEP 头 |
-| **审计日志** | HMAC 签名链日志 + 可选 RSA 公钥加密远程存储 |
+| **随机盐值验证令牌** | 每次初始化生成 16 字节随机盐，防御彩虹表攻击 |
 
 ### 功能特性
 | 特性 | 说明 |
@@ -48,8 +48,8 @@ S-Qrypt 是一个严格零信任、后量子安全的加密笔记保险箱，专
 | **服务端分页** | LIMIT/OFFSET 分页，避免大数据量性能问题 |
 | **自动锁定** | 60 秒无操作自动擦除内存密钥 |
 | **PWA 支持** | Service Worker + Web Manifest + 应用图标 |
-| **安全审计面板** | 本地签名日志 + 远程加密日志查看与私钥解密 |
-| **加载状态指示器** | 异步操作 spinner |
+| **安全审计面板** | 本地签名链日志 + 远程 RSA 加密日志下载与离线解密指引 |
+| **键盘快捷键** | Esc 关闭面板、Ctrl+N 新建、Ctrl+F 搜索 |
 | **编辑器未保存提示** | 离开编辑器时检测未保存更改 |
 
 ---
@@ -59,16 +59,15 @@ S-Qrypt 是一个严格零信任、后量子安全的加密笔记保险箱，专
 ```
 用户密码
     │
-    ├── SHA-224 ──────→ verification_token（服务器存储，仅用于验证）
+    ├── 随机盐(16B) + SHA-256(SHA-224(pw)) → verification_token
     │
     └── 强化多阶 KDF ──→ MK（主密钥，256 字节，仅在浏览器内存）
          │ 预混合 (128 轮 HMAC-SHA512)
-         │ 内存硬混淆 (自适应 32/24/16 MB, 128/80/60 轮)
-         │ Argon2id 混合 (可选，WASM)
+         │ 内存硬混淆 (自适应 32/24/16 MB)
+         │ Argon2id 混合 (WASM，自动降级纯软件)
          │ HKDF 淬炼
          │
-         ├── HKDF-Expand(MK, "s-qrypt-op-auth", 32) → operation_token
-         │
+         ├── HKDF-Expand(MK, "s-qrypt-op-auth") → operation_token
          ├── deriveKA(MK, id) → 2048-bit KA（元数据密钥）
          ├── deriveKB(MK, id) → 2048-bit KB（正文密钥）
          └── deriveKC(MK, id) → 2048-bit KC（完整性密钥）
@@ -97,92 +96,47 @@ S-Qrypt 是一个严格零信任、后量子安全的加密笔记保险箱，专
 ### 💻 一键部署（CLI，推荐 · 无需 API Token）
 
 ```bash
-# 1. 克隆项目
 git clone https://github.com/stop666two/S-Qrypt.git
 cd S-Qrypt
-
-# 2. 安装依赖
 npm install
-
-# 3. Cloudflare OAuth 登录（自动处理认证，无需手动创建 Token）
 npx wrangler login
-
-# 4. 一键创建 D1 数据库 + 绑定 + 部署
 npm run setup
 ```
 
-`npm run setup` 会自动完成：
-1. 创建 D1 数据库 `s-qrypt-db`
-2. 将数据库 ID 写入 `wrangler.jsonc`
-3. 部署 Worker
-4. 恢复 `wrangler.jsonc` 占位符（防止敏感信息泄漏）
+`npm run setup` 自动完成：创建 D1 数据库 → 更新配置 → 部署 Worker → 恢复占位符。
 
 ### ⚡ GitHub Actions 自动部署
 
-顶部徽章 → 进入 GitHub **Actions** 页面 → 点击 **Run workflow** 触发部署。
+顶部徽章 → GitHub **Actions** → **Run workflow** 触发部署。
 
-> **可选**：在 Settings → Secrets → Actions 添加 `CLOUDFLARE_API_TOKEN` 后可自动部署。
+> 可选：在 Settings → Secrets → Actions 添加 `CLOUDFLARE_API_TOKEN` 后自动部署。
 
 ### 手动部署
 
-#### 前置要求
-- [Node.js](https://nodejs.org/) 18+
-- [Cloudflare 账户](https://dash.cloudflare.com/)
-- [Wrangler CLI](https://developers.cloudflare.com/workers/wrangler/)（已含在 devDependencies）
-
-#### 步骤
-
 ```bash
-# 1. 克隆项目
 git clone https://github.com/stop666two/S-Qrypt.git
 cd s-qrypt
-
-# 2. 安装依赖
 npm install
-
-# 3. 登录 Cloudflare
 npx wrangler login
-
-# 4. 创建 D1 数据库
 npx wrangler d1 create s-qrypt-db
-
-# 5. 将输出的 database_id 填入 wrangler.jsonc
-#   编辑 wrangler.jsonc，将 `d1_databases[0].database_id` 替换为实际 ID
-#   （本地开发时 ID 任意，wrangler 自动使用本地 SQLite）
-
-# 6. 部署（Schema 由 Worker 启动时自动创建，无需手动迁移）
+# 将输出的 database_id 填入 wrangler.jsonc 的 d1_databases[0].database_id
 npm run deploy
 ```
 
-部署完成后访问输出的 Worker URL 即可开始使用。
+Schema 由 Worker 启动时自动创建，无需手动迁移。
 
 ---
 
 ## 本地开发
 
 ```bash
-# 启动开发服务器（默认 http://127.0.0.1:8787）
-npm run dev
-
-# 运行测试
-npm test
-
-# TypeScript 类型检查
-npx tsc --noEmit
-
-# 生产部署（包含 JS 混淆）
-npm run deploy
-
-# 仅混淆（部署前步骤）
-node scripts/obfuscate.mjs
+npm run dev        # 启动开发服务器 (http://127.0.0.1:8787)
+npm test           # 运行测试
+npm run deploy     # 生产部署（包含 JS 混淆）
+npm run setup      # 一键 D1 创建 + 部署
 ```
 
-### 开发注意事项
-
-- 前端 SPA 嵌入在 `src/homeHtml.ts` 的模板字符串中
-- 沙箱 iframe 页面在 `src/cryptoSandboxHtml.ts` 中
-- 修改后需重启 `npm run dev` 才能生效
-- 第一次访问时 MK 派生约 1-3 秒（取决于设备性能）
+**注意事项：** 前端 SPA 嵌入在 `src/homeHtml.ts` 模板字符串中；沙箱页面在 `src/cryptoSandboxHtml.ts` 中。修改后需重启 `npm run dev`。
 
 ---
 
@@ -190,41 +144,40 @@ node scripts/obfuscate.mjs
 
 所有端点前缀为 `/api`，请求和响应均为 `application/json`。
 
-### 验证与初始化
-
+### 初始化与认证
 | 方法 | 路径 | 说明 |
 |------|------|------|
-| `GET` | `/api/init-check` | 检查是否已初始化 |
-| `GET` | `/api/token` | 获取密码验证令牌（有频率限制） |
-| `POST` | `/api/init` | 初始化保险箱 |
+| `GET` | `/api/init-check` | 检查初始化状态 |
+| `GET` | `/api/token` | 获取验证令牌（含盐值，频率限制） |
+| `POST` | `/api/init` | 保险箱初始化（含盐值） |
 
 ### 笔记操作
-
 | 方法 | 路径 | 说明 |
 |------|------|------|
-| `GET` | `/api/notes?offset=0&limit=50` | 获取笔记列表（分页） |
-| `POST` | `/api/note` | 创建占位笔记（需 operation_token） |
-| `GET` | `/api/note/:id` | 获取指定笔记 |
-| `PUT` | `/api/note/:id` | 更新笔记（需 operation_token） |
-| `PATCH` | `/api/note/:id/soft-delete` | 软删除（需 operation_token） |
-| `PATCH` | `/api/note/:id/restore` | 恢复软删除（需 operation_token） |
-| `DELETE` | `/api/note/:id` | 硬删除（需 operation_token） |
+| `GET` | `/api/notes?offset=0&limit=50&deleted=1` | 笔记列表（可选 `deleted=1` 回收站） |
+| `POST` | `/api/note` | 创建笔记（需 `operation_token`） |
+| `GET` | `/api/note/:id` | 获取笔记 |
+| `PUT` | `/api/note/:id` | 更新笔记（需 `operation_token`，大小限制 2MB） |
+| `PATCH` | `/api/note/:id/soft-delete` | 软删除（需 `operation_token`） |
+| `PATCH` | `/api/note/:id/restore` | 恢复（需 `operation_token`） |
+| `DELETE` | `/api/note/:id` | 硬删除（需 `operation_token`） |
 
 ### 审计日志
-
 | 方法 | 路径 | 说明 |
 |------|------|------|
 | `POST` | `/api/audit/log` | 提交加密日志条目 |
-| `GET` | `/api/audit/logs?limit=50&offset=0` | 获取加密日志（需验证令牌） |
+| `GET` | `/api/audit/logs?limit=50` | 获取加密日志（需验证令牌） |
 
-### PWA
-
+### PWA / 其他
 | 路径 | 说明 |
 |------|------|
 | `/manifest.webmanifest` | PWA 清单 |
 | `/sw.js` | Service Worker |
 | `/app-icon.svg` | 应用图标 |
 | `/crypto-sandbox` | 密码学沙箱 iframe |
+| `/deploy` | 部署指南页 |
+| `/argon2.js` | 自托管 argon2 WASM 加载器 |
+| `/argon2.wasm` | 自托管 argon2 WASM 二进制 |
 
 ---
 
@@ -233,20 +186,26 @@ node scripts/obfuscate.mjs
 ```
 s-qrypt/
 ├── src/
-│   ├── index.ts                # Cloudflare Worker 入口（API 路由 + CSP 头）
-│   ├── homeHtml.ts             # 主页面 SPA（CSS + HTML + JavaScript）
-│   └── cryptoSandboxHtml.ts    # 沙箱 iframe（密码学操作）
-├── migrations/
-│   └── 0001_init.sql           # D1 数据库初始模式
+│   ├── index.ts                # Cloudflare Worker 入口 (API + CSP + 路由)
+│   ├── homeHtml.ts             # 主页面 SPA (CSS + HTML + JS 模板字符串)
+│   ├── cryptoSandboxHtml.ts    # 沙箱 iframe (密码学操作)
+│   ├── deployHtml.ts           # 部署指南页模板
+│   └── argon2Files.ts          # Argon2 WASM/JS 内嵌 (自托管)
+├── public/
+│   └── deploy.html             # 静态部署指南页
 ├── scripts/
-│   └── obfuscate.mjs           # JavaScript 混淆脚本（控制流平坦化）
+│   ├── setup.mjs               # 一键部署脚本 (D1 + Worker)
+│   └── obfuscate.mjs           # JS 控制流混淆
+├── migrations/
+│   └── 0001_init.sql           # D1 数据库初始模式 (参考)
 ├── test/
 │   └── index.spec.ts           # Vitest 集成测试
-├── public/                     # 静态资源目录
+├── .github/workflows/
+│   └── deploy.yml              # GitHub Actions 自动部署
 ├── wrangler.jsonc              # Cloudflare Workers 配置
-├── package.json
+├── worker-configuration.d.ts   # Worker 类型声明
 ├── tsconfig.json
-└── worker-configuration.d.ts   # Worker 类型声明
+└── package.json
 ```
 
 ---
@@ -258,13 +217,11 @@ s-qrypt/
 | **运行时** | Cloudflare Workers (ES2024) |
 | **数据库** | D1 (SQLite 兼容) |
 | **语言** | TypeScript (strict mode) |
-| **前端** | 单页应用（无框架，纯 JS） |
-| **密码学** | Web Crypto API + 自定义实现 |
-| **Argon2id** | argon2-browser (WASM) |
-| **沙箱** | iframe + postMessage |
+| **前端** | 纯 JS SPA（无框架） |
+| **密码学** | Web Crypto API + argon2-browser WASM |
+| **沙箱** | iframe sandbox + postMessage |
 | **测试** | Vitest + @cloudflare/vitest-pool-workers |
-| **部署** | Wrangler CLI |
-| **混淆** | javascript-obfuscator |
+| **部署** | Wrangler CLI / GitHub Actions |
 
 ---
 
