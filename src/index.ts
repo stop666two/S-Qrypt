@@ -298,7 +298,6 @@ self.addEventListener('fetch',e=>e.respondWith(fetch(e.request).catch(()=>new Re
       if (!body.verification_token) return errorResponse('missing_verification_token');
       if (!body.operation_token_hash) return errorResponse('missing_operation_token_hash');
 
-      await env.DB.exec("DELETE FROM notes WHERE is_test = 1");
       await env.DB.prepare(
         `INSERT INTO config (id, verification_token, operation_token_hash, init_completed, kdf_version, salt)
          VALUES (?, ?, ?, 1, ?, ?)
