@@ -79,33 +79,6 @@ async function ensureSchema(db: D1Database): Promise<void> {
   try { await db.exec("CREATE INDEX IF NOT EXISTS idx_notes_active ON notes(is_test, deleted, id)"); } catch (_) {}
 }
 
-const RATE_MAX = 8;
-const RATE_WINDOW_MS = 300000; // 5 min
-const RATE_LOCK_MS = 600000;   // 10 min
-
-async function checkRateLimit(db: D1Database, key: string): Promise<{ allowed: boolean; retryAfter?: number }> {
-  const now = Date.now();
-  let row = await db.prepare('SELECT * FROM auth_limits WHERE key = ?').bind(key).first<{ key: string; attempts: number; window_start: number; locked_until: number }>();
-  if (row && row.locked_until > now) {
-    return { allowed: false, retryAfter: Math.ceil((row.locked_until - now) / 1000) };
-  }
-  if (!row || (now - row.window_start) > RATE_WINDOW_MS) {
-    await db.prepare('INSERT OR REPLACE INTO auth_limits (key, attempts, window_start, locked_until) VALUES (?, 1, ?, 0)').bind(key, now).run();
-    return { allowed: true };
-  }
-  const newAttempts = row.attempts + 1;
-  if (newAttempts >= RATE_MAX) {
-    await db.prepare('UPDATE auth_limits SET attempts = ?, locked_until = ? WHERE key = ?').bind(newAttempts, now + RATE_LOCK_MS, key).run();
-    return { allowed: false, retryAfter: Math.ceil(RATE_LOCK_MS / 1000) };
-  }
-  await db.prepare('UPDATE auth_limits SET attempts = ? WHERE key = ?').bind(newAttempts, key).run();
-  return { allowed: true };
-}
-
-async function resetRateLimit(db: D1Database, key: string): Promise<void> {
-  await db.prepare('DELETE FROM auth_limits WHERE key = ?').bind(key).run();
-}
-
 async function getClientIp(request: Request): Promise<string> {
   return request.headers.get('CF-Connecting-IP') || request.headers.get('X-Forwarded-For') || 'unknown';
 }
@@ -143,6 +116,47 @@ async function requireVerificationToken(request: Request, db: D1Database): Promi
   return null;
 }
 
+function csrfCheck(request: Request): Response | null {
+  const origin = request.headers.get('Origin');
+  const referer = request.headers.get('Referer');
+  if (!origin && !referer) return null;
+  const allowed = (s: string) =>
+    s.startsWith('https://') ||
+    s.startsWith('http://127.0.0.1') ||
+    s.startsWith('http://localhost');
+  if (origin && !allowed(origin)) return jsonResponse({ error: 'forbidden_origin' }, 403);
+  if (referer && !allowed(referer)) return jsonResponse({ error: 'forbidden_referer' }, 403);
+  return null;
+}
+
+function validateString(v: unknown, maxLen: number): v is string {
+  return typeof v === 'string' && v.length > 0 && v.length <= maxLen;
+}
+
+const RATE_WINDOW_MS = 300000;
+const RATE_LOCK_MS = 600000;
+const RATE_MAX = 8;
+
+async function writeRateLimit(db: D1Database, key: string): Promise<Response | null> {
+  const now = Date.now();
+  let row = await db.prepare('SELECT * FROM auth_limits WHERE key = ?')
+    .bind(key).first<{ key: string; attempts: number; window_start: number; locked_until: number }>();
+  if (row && row.locked_until > now) {
+    return jsonResponse({ error: 'rate_limited', retry_after: Math.ceil((row.locked_until - now) / 1000) }, 429);
+  }
+  if (!row || (now - row.window_start) > RATE_WINDOW_MS) {
+    await db.prepare('INSERT OR REPLACE INTO auth_limits (key, attempts, window_start, locked_until) VALUES (?, 1, ?, 0)').bind(key, now).run();
+    return null;
+  }
+  const newAttempts = row.attempts + 1;
+  if (newAttempts >= RATE_MAX) {
+    await db.prepare('UPDATE auth_limits SET attempts = ?, locked_until = ? WHERE key = ?').bind(newAttempts, now + RATE_LOCK_MS, key).run();
+    return jsonResponse({ error: 'rate_limited', retry_after: Math.ceil(RATE_LOCK_MS / 1000) }, 429);
+  }
+  await db.prepare('UPDATE auth_limits SET attempts = ? WHERE key = ?').bind(newAttempts, key).run();
+  return null;
+}
+
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     const url = new URL(request.url);
@@ -150,6 +164,9 @@ export default {
     const method = request.method;
 
     await ensureSchema(env.DB);
+
+    const csrfRes = csrfCheck(request);
+    if (csrfRes && path.startsWith('/api')) return csrfRes;
 
     // Serve SPA
     if (path === '/' || path === '/index.html') {
@@ -261,10 +278,8 @@ self.addEventListener('fetch',e=>e.respondWith(fetch(e.request).catch(()=>new Re
     // GET /api/token — get verification token
     if (path === `${API_PREFIX}/token`) {
       const ip = await getClientIp(request);
-      const rl = await checkRateLimit(env.DB, 'token:' + ip);
-      if (!rl.allowed) {
-        return jsonResponse({ error: 'rate_limited', retry_after: rl.retryAfter }, 429);
-      }
+      const rl = await writeRateLimit(env.DB, 'token:' + ip);
+      if (rl) return rl;
       const config = await env.DB.prepare(
         'SELECT verification_token, salt FROM config WHERE id = ?'
       ).bind('app_config').first<{ verification_token: string; salt: string }>();
@@ -342,8 +357,12 @@ self.addEventListener('fetch',e=>e.respondWith(fetch(e.request).catch(()=>new Re
     if (path === `${API_PREFIX}/note` && method === 'POST') {
       let body: any;
       try { body = await request.json(); } catch { return errorResponse('invalid_json', 400); }
-      const opRes = await checkOperationToken(env.DB, body?.operation_token);
+      if (!validateString(body?.operation_token, 128)) return errorResponse('invalid_token', 400);
+      const opRes = await checkOperationToken(env.DB, body.operation_token);
       if (opRes) return opRes;
+      const ip = await getClientIp(request);
+      const rl = await writeRateLimit(env.DB, 'write:' + ip);
+      if (rl) return rl;
 
       const result = await env.DB.prepare(
         `INSERT INTO notes (encrypted_meta_packet, encrypted_body) VALUES ('', '') RETURNING id`
@@ -371,22 +390,19 @@ self.addEventListener('fetch',e=>e.respondWith(fetch(e.request).catch(()=>new Re
 
     // PUT /api/note/:id — update note
     if (noteMatch && method === 'PUT') {
-      // Parse body once for both op token and data
       let body: any;
       try { body = await request.json(); } catch { return errorResponse('invalid_json', 400); }
+      if (!validateString(body?.operation_token, 128)) return errorResponse('invalid_token', 400);
       const opRes = await checkOperationToken(env.DB, body.operation_token);
       if (opRes) return opRes;
 
       const noteId = Number(noteMatch[1]);
-      if (!body.encrypted_meta_packet || !body.encrypted_body) {
-        return errorResponse('missing_fields');
-      }
-      if (body.encrypted_meta_packet.length > 10000) {
-        return errorResponse('meta_too_large', 413);
-      }
-      if (body.encrypted_body.length > 2097152) {
-        return errorResponse('body_too_large', 413);
-      }
+      if (!isNaN(noteId) && noteId < 1) return errorResponse('invalid_id', 400);
+      if (!validateString(body.encrypted_meta_packet, 10000)) return errorResponse('invalid_meta', 400);
+      if (!validateString(body.encrypted_body, 2097152)) return errorResponse('invalid_body', 400);
+      const ip = await getClientIp(request);
+      const rl = await writeRateLimit(env.DB, 'write:' + ip);
+      if (rl) return rl;
       const result = await env.DB.prepare(
         "UPDATE notes SET encrypted_meta_packet = ?, encrypted_body = ?, updated_at = datetime('now')" +
         (body.is_test !== undefined ? ", is_test = ?" : "") + " WHERE id = ?"
@@ -403,10 +419,14 @@ self.addEventListener('fetch',e=>e.respondWith(fetch(e.request).catch(()=>new Re
     if (noteMatch && method === 'DELETE') {
       let body: any;
       try { body = await request.json(); } catch { return errorResponse('invalid_json', 400); }
+      if (!validateString(body?.operation_token, 128)) return errorResponse('invalid_token', 400);
       const opRes = await checkOperationToken(env.DB, body.operation_token);
       if (opRes) return opRes;
 
       const noteId = Number(noteMatch[1]);
+      const ip = await getClientIp(request);
+      const rl = await writeRateLimit(env.DB, 'write:' + ip);
+      if (rl) return rl;
       const result = await env.DB.prepare(
         'DELETE FROM notes WHERE id = ?'
       ).bind(noteId).run();
@@ -419,9 +439,13 @@ self.addEventListener('fetch',e=>e.respondWith(fetch(e.request).catch(()=>new Re
     if (restoreMatch && method === 'PATCH') {
       let body: any;
       try { body = await request.json(); } catch { return errorResponse('invalid_json', 400); }
+      if (!validateString(body?.operation_token, 128)) return errorResponse('invalid_token', 400);
       const opRes = await checkOperationToken(env.DB, body.operation_token);
       if (opRes) return opRes;
       const noteId = Number(restoreMatch[1]);
+      const ip = await getClientIp(request);
+      const rl = await writeRateLimit(env.DB, 'write:' + ip);
+      if (rl) return rl;
       const result = await env.DB.prepare(
         'UPDATE notes SET deleted = 0 WHERE id = ?'
       ).bind(noteId).run();
@@ -434,10 +458,14 @@ self.addEventListener('fetch',e=>e.respondWith(fetch(e.request).catch(()=>new Re
     if (softDeleteMatch && method === 'PATCH') {
       let body: any;
       try { body = await request.json(); } catch { return errorResponse('invalid_json', 400); }
+      if (!validateString(body?.operation_token, 128)) return errorResponse('invalid_token', 400);
       const opRes = await checkOperationToken(env.DB, body.operation_token);
       if (opRes) return opRes;
 
       const noteId = Number(softDeleteMatch[1]);
+      const ip = await getClientIp(request);
+      const rl = await writeRateLimit(env.DB, 'write:' + ip);
+      if (rl) return rl;
       const result = await env.DB.prepare(
         'UPDATE notes SET deleted = 1 WHERE id = ?'
       ).bind(noteId).run();
@@ -449,8 +477,11 @@ self.addEventListener('fetch',e=>e.respondWith(fetch(e.request).catch(()=>new Re
     if (path === `${API_PREFIX}/audit/log` && method === 'POST') {
       let body: any;
       try { body = await request.json(); } catch { return errorResponse('invalid_json', 400); }
-      if (!body.encrypted_entry || !body.fingerprint_hash) return errorResponse('missing_fields');
-      if (body.encrypted_entry.length > 5000) return errorResponse('entry_too_large', 413);
+      if (!validateString(body?.encrypted_entry, 5000)) return errorResponse('invalid_entry', 400);
+      if (!validateString(body?.fingerprint_hash, 64)) return errorResponse('invalid_fingerprint', 400);
+      const ip = await getClientIp(request);
+      const rl = await writeRateLimit(env.DB, 'audit:' + ip);
+      if (rl) return rl;
       await env.DB.prepare(
         'INSERT INTO audit_logs (encrypted_entry, fingerprint_hash) VALUES (?, ?)'
       ).bind(body.encrypted_entry, body.fingerprint_hash).run();
