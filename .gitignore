@@ -6,3 +6,4 @@ wrangler.toml
 *.swp
 *.swo
 dist/
+_tmp_*
