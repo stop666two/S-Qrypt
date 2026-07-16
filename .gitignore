@@ -2,8 +2,38 @@ node_modules/
 .wrangler/
 .dev.vars
 wrangler.toml
-*~
+
+# 环境变量
+.env
+.env.*
+!.env.example
+
+# 构建产物
+dist/
+*.tsbuildinfo
+
+# 编辑器
+.vscode/
+.idea/
 *.swp
 *.swo
-dist/
+*~
+
+# 日志
+*.log
+npm-debug.log*
+
+# 系统
+Thumbs.db
+.DS_Store
+
+# 临时文件
 _tmp_*
+
+# AI 规则文件 - 禁止提交版本控制
+AGENTS.md
+AGENTS.txt
+AGENT.md
+AGENT.txt
+agent-readme.md
+RULES.md

@@ -34,7 +34,7 @@ function htmlResponse(body: string): Response {
     status: 200,
     headers: {
       'Content-Type': 'text/html; charset=utf-8',
-      'Content-Security-Policy': "default-src 'self'; script-src 'self' 'unsafe-inline' https://static.cloudflareinsights.com; style-src 'self' 'unsafe-inline'; object-src 'none'; connect-src 'self' https://static.cloudflareinsights.com;",
+      'Content-Security-Policy': "default-src 'self'; script-src 'self' 'unsafe-inline' https://static.cloudflareinsights.com; style-src 'self' 'unsafe-inline'; object-src 'none'; img-src 'self' data: blob: https://static.cloudflareinsights.com; connect-src 'self' https://static.cloudflareinsights.com;",
       'Cross-Origin-Opener-Policy': 'same-origin',
       'Cross-Origin-Embedder-Policy': 'require-corp',
       'X-Content-Type-Options': 'nosniff',
@@ -67,12 +67,13 @@ async function ensureSchema(db: D1Database): Promise<void> {
   await db.exec(
     "CREATE TABLE IF NOT EXISTS config (id TEXT PRIMARY KEY, verification_token TEXT NOT NULL, operation_token_hash TEXT NOT NULL DEFAULT '', init_completed INTEGER NOT NULL DEFAULT 0, kdf_version INTEGER NOT NULL DEFAULT 1, salt TEXT NOT NULL DEFAULT '')"
   );
-  try { await db.exec("ALTER TABLE config ADD COLUMN salt TEXT NOT NULL DEFAULT ''"); } catch (_) {}
+  try { await db.exec("ALTER TABLE config ADD COLUMN salt TEXT NOT NULL DEFAULT ''"); } catch (e) { if (!(e instanceof Error) || !e.message?.includes('duplicate column')) throw e; }
+  try { await db.exec("ALTER TABLE config ADD COLUMN audit_public_key TEXT NOT NULL DEFAULT ''"); } catch (e) { if (!(e instanceof Error) || !e.message?.includes('duplicate column')) throw e; }
   await db.exec(
     "CREATE TABLE IF NOT EXISTS notes (id INTEGER PRIMARY KEY AUTOINCREMENT, encrypted_meta_packet TEXT NOT NULL DEFAULT '', encrypted_body TEXT NOT NULL DEFAULT '', is_test INTEGER NOT NULL DEFAULT 0, deleted INTEGER NOT NULL DEFAULT 0, created_at TEXT DEFAULT (datetime('now')), updated_at TEXT DEFAULT (datetime('now')))"
   );
-  try { await db.exec("ALTER TABLE notes ADD COLUMN created_at TEXT DEFAULT (datetime('now'))"); } catch (_) {}
-  try { await db.exec("ALTER TABLE notes ADD COLUMN updated_at TEXT DEFAULT (datetime('now'))"); } catch (_) {}
+  try { await db.exec("ALTER TABLE notes ADD COLUMN created_at TEXT DEFAULT (datetime('now'))"); } catch (e) { if (!(e instanceof Error) || !e.message?.includes('duplicate column')) throw e; }
+  try { await db.exec("ALTER TABLE notes ADD COLUMN updated_at TEXT DEFAULT (datetime('now'))"); } catch (e) { if (!(e instanceof Error) || !e.message?.includes('duplicate column')) throw e; }
   await db.exec("CREATE TABLE IF NOT EXISTS auth_limits (key TEXT PRIMARY KEY, attempts INTEGER NOT NULL DEFAULT 0, window_start INTEGER NOT NULL, locked_until INTEGER NOT NULL DEFAULT 0)");
   await db.exec("CREATE TABLE IF NOT EXISTS audit_logs (id INTEGER PRIMARY KEY AUTOINCREMENT, encrypted_entry TEXT NOT NULL, fingerprint_hash TEXT NOT NULL, created_at TEXT DEFAULT (datetime('now')))");
   await db.exec("CREATE INDEX IF NOT EXISTS idx_audit_created ON audit_logs(created_at)");
@@ -135,9 +136,10 @@ function validateString(v: unknown, maxLen: number): v is string {
 
 const RATE_WINDOW_MS = 300000;
 const RATE_LOCK_MS = 600000;
-const RATE_MAX = 8;
+const RATE_MAX_WRITE = 40;
+const RATE_MAX_READ = 100;
 
-async function writeRateLimit(db: D1Database, key: string): Promise<Response | null> {
+async function writeRateLimit(db: D1Database, key: string, max: number = RATE_MAX_WRITE): Promise<Response | null> {
   const now = Date.now();
   let row = await db.prepare('SELECT * FROM auth_limits WHERE key = ?')
     .bind(key).first<{ key: string; attempts: number; window_start: number; locked_until: number }>();
@@ -149,7 +151,7 @@ async function writeRateLimit(db: D1Database, key: string): Promise<Response | n
     return null;
   }
   const newAttempts = row.attempts + 1;
-  if (newAttempts >= RATE_MAX) {
+  if (newAttempts >= max) {
     await db.prepare('UPDATE auth_limits SET attempts = ?, locked_until = ? WHERE key = ?').bind(newAttempts, now + RATE_LOCK_MS, key).run();
     return jsonResponse({ error: 'rate_limited', retry_after: Math.ceil(RATE_LOCK_MS / 1000) }, 429);
   }
@@ -201,7 +203,7 @@ self.addEventListener('fetch',e=>e.respondWith(fetch(e.request).catch(()=>new Re
     if (path === '/app-icon.svg') {
       return new Response(
         `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><rect width="512" height="512" rx="80" fill="#12121a"/><text x="256" y="290" text-anchor="middle" font-family="system-ui" font-weight="700" font-size="220" fill="#6c6cff">S</text><text x="256" y="420" text-anchor="middle" font-family="system-ui" font-weight="300" font-size="60" fill="#8888aa">Q</text></svg>`,
-        { status: 200, headers: { 'Content-Type': 'image/svg+xml', 'Cache-Control': 'no-store' } }
+        { status: 200, headers: { 'Content-Type': 'image/svg+xml', 'Cross-Origin-Resource-Policy': 'cross-origin', 'Cache-Control': 'no-store' } }
       );
     }
 
@@ -212,6 +214,7 @@ self.addEventListener('fetch',e=>e.respondWith(fetch(e.request).catch(()=>new Re
         headers: {
           'Content-Type': 'application/wasm',
           'Access-Control-Allow-Origin': '*',
+          'Cross-Origin-Resource-Policy': 'cross-origin',
           'Cache-Control': 'public, max-age=31536000, immutable',
         },
       });
@@ -222,6 +225,7 @@ self.addEventListener('fetch',e=>e.respondWith(fetch(e.request).catch(()=>new Re
         status: 200,
         headers: {
           'Content-Type': 'application/javascript; charset=utf-8',
+          'Cross-Origin-Resource-Policy': 'cross-origin',
           'Cache-Control': 'public, max-age=31536000, immutable',
         },
       });
@@ -233,7 +237,8 @@ self.addEventListener('fetch',e=>e.respondWith(fetch(e.request).catch(()=>new Re
         status: 200,
         headers: {
           'Content-Type': 'text/html; charset=utf-8',
-          'Content-Security-Policy': "default-src 'self'; script-src 'self' 'unsafe-inline'; connect-src 'self' https://static.cloudflareinsights.com;",
+          'Content-Security-Policy': "default-src 'self'; script-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self' https://static.cloudflareinsights.com;",
+          'Cross-Origin-Resource-Policy': 'cross-origin',
           'X-Content-Type-Options': 'nosniff',
           'Cache-Control': 'no-store',
         },
@@ -246,7 +251,8 @@ self.addEventListener('fetch',e=>e.respondWith(fetch(e.request).catch(()=>new Re
         status: 200,
         headers: {
           'Content-Type': 'text/html; charset=utf-8',
-          'Content-Security-Policy': "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline';",
+          'Content-Security-Policy': "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:;",
+          'Cross-Origin-Resource-Policy': 'cross-origin',
           'X-Content-Type-Options': 'nosniff',
           'Cache-Control': 'no-store',
         },
@@ -278,15 +284,16 @@ self.addEventListener('fetch',e=>e.respondWith(fetch(e.request).catch(()=>new Re
     // GET /api/token — get verification token
     if (path === `${API_PREFIX}/token`) {
       const ip = await getClientIp(request);
-      const rl = await writeRateLimit(env.DB, 'token:' + ip);
+      const rl = await writeRateLimit(env.DB, 'token:' + ip, RATE_MAX_READ);
       if (rl) return rl;
       const config = await env.DB.prepare(
-        'SELECT verification_token, salt FROM config WHERE id = ?'
-      ).bind('app_config').first<{ verification_token: string; salt: string }>();
+        'SELECT verification_token, salt, audit_public_key FROM config WHERE id = ?'
+      ).bind('app_config').first<{ verification_token: string; salt: string; audit_public_key: string }>();
       if (!config) return errorResponse('not_initialized', 404);
       return jsonResponse({
         verification_token: config.verification_token,
         salt: config.salt || undefined,
+        audit_public_key: config.audit_public_key || undefined,
       });
     }
 
@@ -304,6 +311,7 @@ self.addEventListener('fetch',e=>e.respondWith(fetch(e.request).catch(()=>new Re
         operation_token_hash?: string;
         salt?: string;
         kdf_version?: number;
+        audit_public_key?: string;
       };
       try {
         body = await request.json();
@@ -314,20 +322,22 @@ self.addEventListener('fetch',e=>e.respondWith(fetch(e.request).catch(()=>new Re
       if (!body.operation_token_hash) return errorResponse('missing_operation_token_hash');
 
       await env.DB.prepare(
-        `INSERT INTO config (id, verification_token, operation_token_hash, init_completed, kdf_version, salt)
-         VALUES (?, ?, ?, 1, ?, ?)
+        `INSERT INTO config (id, verification_token, operation_token_hash, init_completed, kdf_version, salt, audit_public_key)
+         VALUES (?, ?, ?, 1, ?, ?, ?)
          ON CONFLICT (id) DO UPDATE SET
            verification_token = excluded.verification_token,
            operation_token_hash = excluded.operation_token_hash,
            init_completed = 1,
            kdf_version = excluded.kdf_version,
-           salt = excluded.salt`
+           salt = excluded.salt,
+           audit_public_key = excluded.audit_public_key`
       ).bind(
         'app_config',
         body.verification_token,
         body.operation_token_hash,
         body.kdf_version ?? 1,
-        body.salt ?? ''
+        body.salt ?? '',
+        body.audit_public_key ?? ''
       ).run();
 
       return jsonResponse({ status: 'ok' }, 201);
@@ -378,9 +388,9 @@ self.addEventListener('fetch',e=>e.respondWith(fetch(e.request).catch(()=>new Re
 
       const noteId = Number(noteMatch[1]);
       const row = await env.DB.prepare(
-        'SELECT id, encrypted_meta_packet, encrypted_body, created_at, updated_at FROM notes WHERE id = ?'
-      ).bind(noteId).first<{ id: number; encrypted_meta_packet: string; encrypted_body: string }>();
-      if (!row) return errorResponse('not_found', 404);
+        'SELECT id, encrypted_meta_packet, encrypted_body, created_at, updated_at, deleted FROM notes WHERE id = ?'
+      ).bind(noteId).first<{ id: number; encrypted_meta_packet: string; encrypted_body: string; deleted: number }>();
+      if (!row || row.deleted === 1) return errorResponse('not_found', 404);
       return jsonResponse({
         id: row.id,
         encrypted_meta_packet: row.encrypted_meta_packet,
@@ -501,6 +511,32 @@ self.addEventListener('fetch',e=>e.respondWith(fetch(e.request).catch(()=>new Re
         'SELECT id, encrypted_entry, created_at FROM audit_logs ORDER BY id DESC LIMIT ? OFFSET ?'
       ).bind(limit, offset).all();
       return jsonResponse({ entries: rows.results, total: totalRow?.cnt ?? 0 });
+    }
+
+    // PUT /api/audit/key — update audit public key (requires operation token)
+    if (path === `${API_PREFIX}/audit/key` && method === 'PUT') {
+      let body: any;
+      try { body = await request.json(); } catch { return errorResponse('invalid_json', 400); }
+      if (!validateString(body?.operation_token, 128)) return errorResponse('invalid_token', 400);
+      const opRes = await checkOperationToken(env.DB, body.operation_token);
+      if (opRes) return opRes;
+      if (typeof body.audit_public_key !== 'string' || body.audit_public_key.length > 10000)
+        return errorResponse('invalid_key', 400);
+      await env.DB.prepare(
+        'UPDATE config SET audit_public_key = ? WHERE id = ?'
+      ).bind(body.audit_public_key, 'app_config').run();
+      return jsonResponse({ status: 'key_updated' });
+    }
+
+    // DELETE /api/audit/logs — clear all audit logs (requires operation token)
+    if (path === `${API_PREFIX}/audit/logs` && method === 'DELETE') {
+      let body: any;
+      try { body = await request.json(); } catch { return errorResponse('invalid_json', 400); }
+      if (!validateString(body?.operation_token, 128)) return errorResponse('invalid_token', 400);
+      const opRes = await checkOperationToken(env.DB, body.operation_token);
+      if (opRes) return opRes;
+      await env.DB.exec('DELETE FROM audit_logs');
+      return jsonResponse({ status: 'logs_cleared' });
     }
 
     return errorResponse('not_found', 404);

@@ -35,8 +35,8 @@ S-Qrypt 是一个严格零信任、后量子安全的加密笔记保险箱，专
 | **沙箱 iframe 隔离** | 密码学操作在独立 sandbox iframe 中执行，密钥不进入主页面 JS 作用域 |
 | **Argon2id 混合增强** | 自动使用 Argon2id WASM 混合主密钥派生，浏览器不支持时自动降级 |
 | **操作授权令牌** | 所有写操作需携带 HKDF 派生一次性令牌，防越权操作 |
-| **多级频率限制** | 登录 + 写操作双重频率限制，同一 IP 限制后锁定 |
-| **抗侧信道** | 恒定时间比较 + 随机延迟填充 + CSP/COOP/COEP 头 |
+| **多级频率限制** | 写操作 40 次/5 分钟，读操作 100 次/5 分钟，超限锁定 10 分钟 |
+| **抗侧信道** | 恒定时间比较 + 随机延迟填充 + CSP/COOP/COEP + img-src + CORP 头 |
 | **随机盐值验证令牌** | 每次初始化生成 16 字节随机盐，防御彩虹表攻击 |
 
 ### 功能特性
@@ -46,9 +46,11 @@ S-Qrypt 是一个严格零信任、后量子安全的加密笔记保险箱，专
 | **回收站** | 恢复或永久删除已软删除的笔记 |
 | **实时搜索** | 按标题实时过滤，200ms 防抖 |
 | **服务端分页** | LIMIT/OFFSET 分页，避免大数据量性能问题 |
-| **自动锁定** | 60 秒无操作自动擦除内存密钥 |
+| **自动锁定** | 60 秒无操作自动擦除内存密钥（操作中自动延后） |
 | **PWA 支持** | Service Worker + Web Manifest + 应用图标 |
 | **安全审计面板** | 本地签名链日志 + 远程 RSA 加密日志下载与离线解密指引 |
+| **审计密钥管理** | 初始化后可随时配置/更换 RSA 公钥，更换时旧日志自动清除 |
+| **一键明文备份** | 解密所有笔记并导出 JSON 文件，实时进度显示，失败笔记自动跳过 |
 | **键盘快捷键** | Esc 关闭面板、Ctrl+N 新建、Ctrl+F 搜索 |
 | **编辑器未保存提示** | 离开编辑器时检测未保存更改 |
 
@@ -180,7 +182,7 @@ npm run setup      # 一键 D1 创建 + 部署
 | **存储** | AES-256-GCM 认证加密 | 每次加密随机 IV，认证标签防篡改 |
 | **密钥** | 沙箱 iframe 隔离 | 密钥仅在线性内存中，主页面不可直接访问 |
 | **令牌** | HKDF 派生 operation_token | 每次写操作需携带，防 CSRF/越权 |
-| **频率** | 登录 + 写操作双重 Rate Limit | IP 维度 8 次/5 分钟自动锁定 10 分钟 |
+| **频率** | 写操作 + 读操作分离 Rate Limit | 写 40 次/5 分钟，读 100 次/5 分钟，超限锁定 10 分钟 |
 | **认证** | 随机盐值 verification_token | 防御彩虹表攻击，旧保险箱自动兼容 |
 | **审计** | HMAC 签名链 + RSA-OAEP 加密 | 防篡改审计日志，私钥离线解密 |
 | **侧信道** | 恒定时间比较 + 随机延迟填充 | 防御时序攻击 |
@@ -236,7 +238,7 @@ echo "BASE64_ENTRY" | openssl base64 -d | openssl pkeyutl -decrypt \
 
 ## API 文档
 
-所有端点前缀为 `/api`，请求和响应均为 `application/json`。所有写操作需携带 `operation_token`（HKDF 派生）。读操作需携带 `X-Verification-Token` 请求头。频率限制基于 IP 地址。
+所有端点前缀为 `/api`，请求和响应均为 `application/json`。所有写操作需携带 `operation_token`（HKDF 派生）和 `X-Verification-Token` 请求头。读操作需携带 `X-Verification-Token` 请求头。频率限制基于 IP 地址，写操作与读操作分离计数。
 
 ### 认证头
 
@@ -250,8 +252,8 @@ operation_token: <hex_token>          # 所有 POST/PUT/PATCH/DELETE 请求体�
 | 方法 | 路径 | 认证 | 说明 |
 |------|------|------|------|
 | `GET` | `/api/init-check` | 无 | 返回 `{initialized, db_bound, kdf_version}` |
-| `GET` | `/api/token` | 频率限制 | 返回 `{verification_token, salt?}`。salt 仅新保险箱有。频率: 8次/5分钟 |
-| `POST` | `/api/init` | operation_token | 初始化保险箱。请求体: `{verification_token, salt, operation_token_hash, kdf_version}` |
+| `GET` | `/api/token` | 频率限制 | 返回 `{verification_token, salt?, audit_public_key?}`。salt 仅新保险箱有；audit_public_key 仅在已配置时返回。频率: 100次/5分钟 |
+| `POST` | `/api/init` | operation_token | 初始化保险箱。请求体: `{verification_token, salt, operation_token_hash, kdf_version, audit_public_key?}` |
 
 ### 笔记操作
 
@@ -271,6 +273,8 @@ operation_token: <hex_token>          # 所有 POST/PUT/PATCH/DELETE 请求体�
 |------|------|------|------|
 | `POST` | `/api/audit/log` | X-Verification-Token | 提交 RSA 加密的日志条目。body: `{encrypted_entry (≤5KB), fingerprint_hash}` |
 | `GET` | `/api/audit/logs?limit=50` | X-Verification-Token | 获取加密日志列表。返回 `{entries: [{id, encrypted_entry, created_at}], total}` |
+| `PUT` | `/api/audit/key` | operation_token | 更新审计公钥。body: `{operation_token, audit_public_key}`。已配置时自动清除旧日志 |
+| `DELETE` | `/api/audit/logs` | operation_token | 清空所有审计日志。body: `{operation_token}`。更换公钥时自动调用 |
 
 ### 静态路由（无需认证）
 
