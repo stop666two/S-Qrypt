@@ -77,10 +77,35 @@ async function getOrCreateDatabase() {
   throw new Error(`无法获取数据库 "${DB_NAME}" 的信息`);
 }
 
+function replaceDatabaseId(config, dbId) {
+  const keyMatch = config.match(/"d1_databases"\s*:/);
+  if (!keyMatch) throw new Error('未找到 d1_databases 配置');
+  const arrStart = config.indexOf('[', keyMatch.index + keyMatch[0].length);
+  if (arrStart === -1) throw new Error('d1_databases 后未找到数组');
+  let depth = 0;
+  let arrEnd = -1;
+  for (let i = arrStart; i < config.length; i++) {
+    if (config[i] === '[') depth++;
+    else if (config[i] === ']') {
+      depth--;
+      if (depth === 0) {
+        arrEnd = i;
+        break;
+      }
+    }
+  }
+  if (arrEnd === -1) throw new Error('d1_databases 数组未闭合');
+  const segment = config.slice(arrStart, arrEnd + 1);
+  const count = (segment.match(/"database_id"\s*:/g) || []).length;
+  if (count !== 1) throw new Error('d1_databases 中 database_id 数量异常: ' + count);
+  const replaced = segment.replace(/"database_id":\s*"[^"]*"/, `"database_id": "${dbId}"`);
+  return config.slice(0, arrStart) + replaced + config.slice(arrEnd + 1);
+}
+
 async function updateConfig(dbId) {
   console.log('\n2. 更新 wrangler.jsonc...');
   let config = readFileSync(wranglerPath, 'utf8');
-  config = config.replace(/"database_id":\s*"[^"]*"/, `"database_id": "${dbId}"`);
+  config = replaceDatabaseId(config, dbId);
   writeFileSync(wranglerPath, config, 'utf8');
   console.log('   ✅ database_id 已写入');
 }
@@ -94,10 +119,11 @@ async function deployWorker() {
 function restorePlaceholder() {
   try {
     let config = readFileSync(wranglerPath, 'utf8');
-    config = config.replace(/"database_id":\s*"[^"]*"/,
-      '"database_id": "00000000-0000-0000-0000-000000000000"');
+    config = replaceDatabaseId(config, '00000000-0000-0000-0000-000000000000');
     writeFileSync(wranglerPath, config, 'utf8');
-  } catch { }
+  } catch (e) {
+    console.warn('恢复占位符失败: ' + e.message);
+  }
 }
 
 async function main() {

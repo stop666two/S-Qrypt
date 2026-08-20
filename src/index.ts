@@ -60,24 +60,31 @@ async function hexSha256(input: string): Promise<string> {
   return Array.from(bytes).map(b => b.toString(16).padStart(2, '0')).join('');
 }
 
+async function ensureColumn(db: D1Database, table: string, column: string, ddl: string): Promise<void> {
+  const res = await db.prepare('SELECT name FROM pragma_table_info(?)').bind(table).all<{ name: string }>();
+  const exists = res.results?.some(r => r.name === column) ?? false;
+  if (!exists) await db.exec(ddl);
+}
+
 let schemaEnsured = false;
 async function ensureSchema(db: D1Database): Promise<void> {
   if (schemaEnsured) return;
   schemaEnsured = true;
   await db.exec(
-    "CREATE TABLE IF NOT EXISTS config (id TEXT PRIMARY KEY, verification_token TEXT NOT NULL, operation_token_hash TEXT NOT NULL DEFAULT '', init_completed INTEGER NOT NULL DEFAULT 0, kdf_version INTEGER NOT NULL DEFAULT 1, salt TEXT NOT NULL DEFAULT '')"
+    "CREATE TABLE IF NOT EXISTS config (id TEXT PRIMARY KEY, verification_token TEXT NOT NULL, verification_token_hash TEXT NOT NULL DEFAULT '', operation_token_hash TEXT NOT NULL DEFAULT '', init_completed INTEGER NOT NULL DEFAULT 0, kdf_version INTEGER NOT NULL DEFAULT 1, salt TEXT NOT NULL DEFAULT '')"
   );
-  try { await db.exec("ALTER TABLE config ADD COLUMN salt TEXT NOT NULL DEFAULT ''"); } catch (e) { if (!(e instanceof Error) || !e.message?.includes('duplicate column')) throw e; }
-  try { await db.exec("ALTER TABLE config ADD COLUMN audit_public_key TEXT NOT NULL DEFAULT ''"); } catch (e) { if (!(e instanceof Error) || !e.message?.includes('duplicate column')) throw e; }
+  await ensureColumn(db, 'config', 'verification_token_hash', "ALTER TABLE config ADD COLUMN verification_token_hash TEXT NOT NULL DEFAULT ''");
+  await ensureColumn(db, 'config', 'salt', "ALTER TABLE config ADD COLUMN salt TEXT NOT NULL DEFAULT ''");
+  await ensureColumn(db, 'config', 'audit_public_key', "ALTER TABLE config ADD COLUMN audit_public_key TEXT NOT NULL DEFAULT ''");
   await db.exec(
     "CREATE TABLE IF NOT EXISTS notes (id INTEGER PRIMARY KEY AUTOINCREMENT, encrypted_meta_packet TEXT NOT NULL DEFAULT '', encrypted_body TEXT NOT NULL DEFAULT '', is_test INTEGER NOT NULL DEFAULT 0, deleted INTEGER NOT NULL DEFAULT 0, created_at TEXT DEFAULT (datetime('now')), updated_at TEXT DEFAULT (datetime('now')))"
   );
-  try { await db.exec("ALTER TABLE notes ADD COLUMN created_at TEXT DEFAULT (datetime('now'))"); } catch (e) { if (!(e instanceof Error) || !e.message?.includes('duplicate column')) throw e; }
-  try { await db.exec("ALTER TABLE notes ADD COLUMN updated_at TEXT DEFAULT (datetime('now'))"); } catch (e) { if (!(e instanceof Error) || !e.message?.includes('duplicate column')) throw e; }
+  await ensureColumn(db, 'notes', 'created_at', "ALTER TABLE notes ADD COLUMN created_at TEXT DEFAULT (datetime('now'))");
+  await ensureColumn(db, 'notes', 'updated_at', "ALTER TABLE notes ADD COLUMN updated_at TEXT DEFAULT (datetime('now'))");
   await db.exec("CREATE TABLE IF NOT EXISTS auth_limits (key TEXT PRIMARY KEY, attempts INTEGER NOT NULL DEFAULT 0, window_start INTEGER NOT NULL, locked_until INTEGER NOT NULL DEFAULT 0)");
   await db.exec("CREATE TABLE IF NOT EXISTS audit_logs (id INTEGER PRIMARY KEY AUTOINCREMENT, encrypted_entry TEXT NOT NULL, fingerprint_hash TEXT NOT NULL, created_at TEXT DEFAULT (datetime('now')))");
   await db.exec("CREATE INDEX IF NOT EXISTS idx_audit_created ON audit_logs(created_at)");
-  try { await db.exec("CREATE INDEX IF NOT EXISTS idx_notes_active ON notes(is_test, deleted, id)"); } catch (_) {}
+  try { await db.exec("CREATE INDEX IF NOT EXISTS idx_notes_active ON notes(is_test, deleted, id)"); } catch (e) { console.warn('[s-qrypt] create idx_notes_active failed:', e instanceof Error ? e.message : e); }
 }
 
 async function getClientIp(request: Request): Promise<string> {
@@ -107,11 +114,24 @@ async function checkOperationToken(db: D1Database, token: string | undefined): P
 
 async function requireVerificationToken(request: Request, db: D1Database): Promise<Response | null> {
   const config = await db.prepare(
-    'SELECT init_completed, verification_token FROM config WHERE id = ?'
-  ).bind('app_config').first<{ init_completed: number; verification_token: string }>();
+    'SELECT init_completed, verification_token, verification_token_hash FROM config WHERE id = ?'
+  ).bind('app_config').first<{ init_completed: number; verification_token: string; verification_token_hash: string }>();
   if (!config || config.init_completed !== 1) return null;
   const token = request.headers.get('X-Verification-Token');
-  if (!token || !constantTimeEqual(token, config.verification_token)) {
+  if (!token) return errorResponse('unauthorized', 401);
+  if (config.verification_token_hash) {
+    if (!constantTimeEqual(await hexSha256(token), config.verification_token_hash)) {
+      return errorResponse('unauthorized', 401);
+    }
+  } else if (config.verification_token) {
+    if (!constantTimeEqual(token, config.verification_token)) {
+      return errorResponse('unauthorized', 401);
+    }
+    const vHash = await hexSha256(token);
+    await db.prepare(
+      "UPDATE config SET verification_token_hash = ?, verification_token = '' WHERE id = ?"
+    ).bind(vHash, 'app_config').run();
+  } else {
     return errorResponse('unauthorized', 401);
   }
   return null;
@@ -237,8 +257,9 @@ self.addEventListener('fetch',e=>e.respondWith(fetch(e.request).catch(()=>new Re
         status: 200,
         headers: {
           'Content-Type': 'text/html; charset=utf-8',
-          'Content-Security-Policy': "default-src 'self'; script-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self' https://static.cloudflareinsights.com;",
+          'Content-Security-Policy': "default-src 'self'; script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval'; img-src 'self' data:; connect-src 'self' https://static.cloudflareinsights.com;",
           'Cross-Origin-Resource-Policy': 'cross-origin',
+          'Cross-Origin-Embedder-Policy': 'require-corp',
           'X-Content-Type-Options': 'nosniff',
           'Cache-Control': 'no-store',
         },
@@ -287,14 +308,13 @@ self.addEventListener('fetch',e=>e.respondWith(fetch(e.request).catch(()=>new Re
       const rl = await writeRateLimit(env.DB, 'token:' + ip, RATE_MAX_READ);
       if (rl) return rl;
       const config = await env.DB.prepare(
-        'SELECT verification_token, salt, audit_public_key FROM config WHERE id = ?'
-      ).bind('app_config').first<{ verification_token: string; salt: string; audit_public_key: string }>();
+        'SELECT salt, audit_public_key FROM config WHERE id = ?'
+      ).bind('app_config').first<{ salt: string; audit_public_key: string }>();
       if (!config) return errorResponse('not_initialized', 404);
       return jsonResponse({
-        verification_token: config.verification_token,
         salt: config.salt || undefined,
         audit_public_key: config.audit_public_key || undefined,
-      });
+      }, 200, { 'Cache-Control': 'no-store' });
     }
 
     // POST /api/init — initialize vault
@@ -309,6 +329,7 @@ self.addEventListener('fetch',e=>e.respondWith(fetch(e.request).catch(()=>new Re
       let body: {
         verification_token?: string;
         operation_token_hash?: string;
+        setup_token?: string;
         salt?: string;
         kdf_version?: number;
         audit_public_key?: string;
@@ -318,14 +339,23 @@ self.addEventListener('fetch',e=>e.respondWith(fetch(e.request).catch(()=>new Re
       } catch {
         return errorResponse('invalid_json');
       }
+      if (!env.SETUP_TOKEN) return errorResponse('setup_token_not_configured', 503);
+      const ip = await getClientIp(request);
+      const rl = await writeRateLimit(env.DB, 'init:' + ip, 20);
+      if (rl) return rl;
+      if (typeof body.setup_token !== 'string' || !constantTimeEqual(body.setup_token, env.SETUP_TOKEN)) {
+        return errorResponse('invalid_setup_token', 403);
+      }
       if (!body.verification_token) return errorResponse('missing_verification_token');
       if (!body.operation_token_hash) return errorResponse('missing_operation_token_hash');
 
+      const verificationTokenHash = await hexSha256(body.verification_token);
       await env.DB.prepare(
-        `INSERT INTO config (id, verification_token, operation_token_hash, init_completed, kdf_version, salt, audit_public_key)
-         VALUES (?, ?, ?, 1, ?, ?, ?)
+        `INSERT INTO config (id, verification_token, verification_token_hash, operation_token_hash, init_completed, kdf_version, salt, audit_public_key)
+         VALUES (?, '', ?, ?, 1, ?, ?, ?)
          ON CONFLICT (id) DO UPDATE SET
-           verification_token = excluded.verification_token,
+           verification_token = '',
+           verification_token_hash = excluded.verification_token_hash,
            operation_token_hash = excluded.operation_token_hash,
            init_completed = 1,
            kdf_version = excluded.kdf_version,
@@ -333,7 +363,7 @@ self.addEventListener('fetch',e=>e.respondWith(fetch(e.request).catch(()=>new Re
            audit_public_key = excluded.audit_public_key`
       ).bind(
         'app_config',
-        body.verification_token,
+        verificationTokenHash,
         body.operation_token_hash,
         body.kdf_version ?? 1,
         body.salt ?? '',

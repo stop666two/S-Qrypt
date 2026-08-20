@@ -32,6 +32,7 @@ function obfuscateJS(js) {
   const tmpDir = resolve(__dirname, '../');
   const tmpIn = resolve(tmpDir, '__tmp_in.js');
   const tmpOut = resolve(tmpDir, '__tmp_out.js');
+  const tmpCheck = resolve(tmpDir, '__tmp_check.js');
   writeFileSync(tmpIn, js, 'utf-8');
   try {
     execSync(
@@ -47,14 +48,21 @@ function obfuscateJS(js) {
       { stdio: 'pipe', timeout: 60000, shell: true, cwd: tmpDir }
     );
     const obfuscated = readFileSync(tmpOut, 'utf-8');
+    if (!obfuscated || obfuscated.trim().length === 0) {
+      throw new Error('obfuscator produced empty output');
+    }
+    if (obfuscated === js) {
+      throw new Error('obfuscator returned the input unchanged');
+    }
+    writeFileSync(tmpCheck, obfuscated, 'utf-8');
+    execSync('node --check "' + tmpCheck + '"', { stdio: 'pipe', timeout: 30000, shell: true, cwd: tmpDir });
+    unlinkSync(tmpCheck);
     return obfuscated;
-  } catch (e) {
-    console.error(`  obfuscation error: ${e.message}`);
-    return js; // fallback to original
   } finally {
     try {
       if (existsSync(tmpIn)) unlinkSync(tmpIn);
       if (existsSync(tmpOut)) unlinkSync(tmpOut);
+      if (existsSync(tmpCheck)) unlinkSync(tmpCheck);
     } catch (_) {}
   }
 }
@@ -69,6 +77,9 @@ for (const file of FILES) {
   const obfJS = obfuscateJS(parts.js);
   console.log(`  JS length: ${parts.js.length} chars → obfuscated: ${obfJS.length} chars`);
   const newContent = parts.before + '<script>' + obfJS + '</script>' + parts.after;
+  if (!newContent.includes('<script>') || !newContent.includes('</script>')) {
+    throw new Error(`Invalid output for ${file}: missing <script> markers`);
+  }
   writeFileSync(path, newContent, 'utf-8');
   console.log(`  Written to ${file}`);
 }

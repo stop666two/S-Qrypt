@@ -1,6 +1,22 @@
+// This file is the single source of truth for the runtime global types used
+// by this Worker (Response, Request, Headers, URL, crypto, D1Database, ...).
+// It is referenced from tsconfig.json via the "types" compiler option.
+//
+// Do NOT add the "DOM" or "WebWorker" libs to tsconfig.json and do NOT
+// install @cloudflare/workers-types: their global declarations would
+// conflict with the ones in this file (duplicate identifier errors).
+// Keep any runtime type updates in this file so it stays the only source.
+
 interface Env {
   DB: D1Database;
+  SETUP_TOKEN?: string;
 }
+
+declare const console: {
+  log(...args: unknown[]): void;
+  warn(...args: unknown[]): void;
+  error(...args: unknown[]): void;
+};
 
 // Cloudflare Workers Runtime Types
 declare class Response {

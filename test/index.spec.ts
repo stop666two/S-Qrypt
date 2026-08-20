@@ -1,21 +1,21 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
-import { env } from 'cloudflare:test';
+import { SELF } from 'cloudflare:test';
 
 const TEST_TOKEN = 'abc123test';
-const TEST_TOKEN_HASH = '6ca13d52ca70c883e0f0bb101e425a89e8624de51db2d2392593af6a841bf90d';
+const TEST_TOKEN_HASH = '03223b3b6fbb56617a7015252b37d8050a9e85c8102e682f18457940b1d4e1bd';
 
-async function jsonFetch(path: string, options?: RequestInit): Promise<{ status: number; data: any }> {
-  const res = await env.DB.fetch(`http://localhost${path}`, {
+async function jsonFetch(path: string, options?: RequestInit): Promise<{ status: number; data: any; headers: Headers }> {
+  const res = await SELF.fetch(`http://localhost${path}`, {
     ...options,
     headers: { 'Content-Type': 'application/json', ...options?.headers },
   });
   const data = await res.json();
-  return { status: res.status, data };
+  return { status: res.status, data, headers: res.headers };
 }
 
 describe('S-Qrypt v1.0.0 API', () => {
   it('serves frontend HTML at /', async () => {
-    const res = await env.DB.fetch('http://localhost/');
+    const res = await SELF.fetch('http://localhost/');
     expect(res.status).toBe(200);
     const text = await res.text();
     expect(text).toContain('S-Qrypt');
@@ -45,6 +45,19 @@ describe('S-Qrypt v1.0.0 API', () => {
     expect(data.id).toBe(1);
   });
 
+  it('rejects init with wrong setup token', async () => {
+    const { status, data } = await jsonFetch('/api/init', {
+      method: 'POST',
+      body: JSON.stringify({
+        verification_token: 'test',
+        operation_token_hash: 'test',
+        setup_token: 'wrong-setup-token',
+      }),
+    });
+    expect(status).toBe(403);
+    expect(data.error).toBe('invalid_setup_token');
+  });
+
   it('init creates config', async () => {
     // First update the placeholder note with encrypted data
     await jsonFetch('/api/note/1', {
@@ -63,6 +76,7 @@ describe('S-Qrypt v1.0.0 API', () => {
         verification_token: 'af3f8e6d9a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f',
         operation_token_hash: TEST_TOKEN_HASH,
         kdf_version: 2,
+        setup_token: 'test-setup-token',
       }),
     });
     expect(status).toBe(201);
@@ -75,6 +89,7 @@ describe('S-Qrypt v1.0.0 API', () => {
       body: JSON.stringify({
         verification_token: 'test',
         operation_token_hash: 'test',
+        setup_token: 'test-setup-token',
       }),
     });
     expect(status).toBe(409);
@@ -87,10 +102,13 @@ describe('S-Qrypt v1.0.0 API', () => {
     expect(data.kdf_version).toBe(2);
   });
 
-  it('returns verification token', async () => {
-    const { status, data } = await jsonFetch('/api/token');
+  it('token endpoint does not leak verification token', async () => {
+    const { status, data, headers } = await jsonFetch('/api/token');
     expect(status).toBe(200);
-    expect(data.verification_token).toBe('af3f8e6d9a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f');
+    expect(data.verification_token).toBeUndefined();
+    expect(data.salt).toBeUndefined();
+    expect(data.audit_public_key).toBeUndefined();
+    expect(headers.get('Cache-Control')).toBe('no-store');
   });
 
   it('lists notes', async () => {
@@ -98,9 +116,16 @@ describe('S-Qrypt v1.0.0 API', () => {
       headers: { 'X-Verification-Token': 'af3f8e6d9a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f' },
     });
     expect(status).toBe(200);
-    expect(data.notes.length).toBeGreaterThanOrEqual(1);
-    expect(data.notes[0].id).toBe(1);
-    expect(data.notes[0].is_test).toBe(1);
+    expect(Array.isArray(data.notes)).toBe(true);
+    expect(data.notes.find((n: any) => n.is_test === 1)).toBeUndefined();
+  });
+
+  it('rejects wrong verification token with 401', async () => {
+    const { status, data } = await jsonFetch('/api/notes', {
+      headers: { 'X-Verification-Token': 'wrong-verification-token' },
+    });
+    expect(status).toBe(401);
+    expect(data.error).toBe('unauthorized');
   });
 
   it('rejects write without operation token after init', async () => {
@@ -108,8 +133,8 @@ describe('S-Qrypt v1.0.0 API', () => {
       method: 'POST',
       body: JSON.stringify({}),
     });
-    expect(status).toBe(403);
-    expect(data.error).toBe('forbidden');
+    expect(status).toBe(400);
+    expect(data.error).toBe('invalid_token');
   });
 
   it('creates placeholder note with operation token', async () => {
@@ -183,12 +208,12 @@ describe('S-Qrypt v1.0.0 API', () => {
       method: 'POST',
       body: JSON.stringify({}),
     });
-    expect(status).toBe(403);
-    expect(data.error).toBe('forbidden');
+    expect(status).toBe(400);
+    expect(data.error).toBe('invalid_token');
   });
 
   it('returns security headers on HTML page', async () => {
-    const res = await env.DB.fetch('http://localhost/');
+    const res = await SELF.fetch('http://localhost/');
     expect(res.headers.get('Content-Security-Policy')).toContain("default-src 'self'");
     expect(res.headers.get('Cross-Origin-Opener-Policy')).toBe('same-origin');
     expect(res.headers.get('Cross-Origin-Embedder-Policy')).toBe('require-corp');

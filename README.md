@@ -109,6 +109,8 @@ npm run setup
 
 `npm run setup` 自动完成：创建 D1 数据库 → 更新配置 → 部署 Worker → 恢复占位符。
 
+> ⚠️ **初始化保护**：`POST /api/init` 受环境变量 `SETUP_TOKEN` 保护。部署后必须执行 `npx wrangler secret put SETUP_TOKEN`（或在 Cloudflare Dashboard → Workers → 对应 Worker → Settings → Variables 中添加 secret），否则初始化接口将返回 503 `setup_token_not_configured`，无法完成初始化。
+
 ### ⚡ GitHub Actions 自动部署
 
 顶部徽章 → GitHub **Actions** → **Run workflow** 触发部署。
@@ -151,7 +153,7 @@ npm run setup      # 一键 D1 创建 + 部署
 ```
 密码输入
   │
-  ├→ SHA-224 ──→ 加 16B 随机盐 ──→ SHA-256 ──→ verification_token (服务端存储)
+  ├→ SHA-224 ──→ 加 16B 随机盐 ──→ SHA-256 ──→ verification_token (服务端仅存 SHA-256 哈希)
   │                                              ↑ 用于 API 认证、频率限制、审计鉴权
   │
   └→ HMAC-SHA512 预混合 (128 轮)
@@ -202,7 +204,8 @@ npm run setup      # 一键 D1 创建 + 部署
 浏览器 (加密操作)                  Cloudflare Worker              D1 Database
       │                                  │                          │
       │── POST /api/init ────────────────→│── INSERT config ────────→│
-      │   {verification_token, salt}      │                          │
+      │   {setup_token, verification_token,   │  存 verification_token   │
+      │    salt, operation_token_hash}         │  SHA-256 哈希            │
       │                                  │                          │
       │── PUT /api/note/:id ─────────────→│── UPDATE notes ─────────→│
       │   {operation_token, encrypted_*}  │  密文存储               │
@@ -252,8 +255,8 @@ operation_token: <hex_token>          # 所有 POST/PUT/PATCH/DELETE 请求体�
 | 方法 | 路径 | 认证 | 说明 |
 |------|------|------|------|
 | `GET` | `/api/init-check` | 无 | 返回 `{initialized, db_bound, kdf_version}` |
-| `GET` | `/api/token` | 频率限制 | 返回 `{verification_token, salt?, audit_public_key?}`。salt 仅新保险箱有；audit_public_key 仅在已配置时返回。频率: 100次/5分钟 |
-| `POST` | `/api/init` | operation_token | 初始化保险箱。请求体: `{verification_token, salt, operation_token_hash, kdf_version, audit_public_key?}` |
+| `GET` | `/api/token` | 频率限制 | 返回 `{salt?, audit_public_key?}`（不再返回 verification_token）。salt 仅新保险箱有；audit_public_key 仅在已配置时返回。响应带 `Cache-Control: no-store`。频率: 100次/5分钟 |
+| `POST` | `/api/init` | setup_token | 初始化保险箱。请求体: `{setup_token, verification_token, salt, operation_token_hash, kdf_version, audit_public_key?}`。setup_token 必须与环境变量 `SETUP_TOKEN` 一致（未配置时返回 503） |
 
 ### 笔记操作
 
