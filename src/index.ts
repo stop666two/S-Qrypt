@@ -61,7 +61,7 @@ async function hexSha256(input: string): Promise<string> {
 }
 
 async function ensureColumn(db: D1Database, table: string, column: string, ddl: string): Promise<void> {
-  const res = await db.prepare('SELECT name FROM pragma_table_info(?)').bind(table).all<{ name: string }>();
+  const res = await db.prepare(PRIMARY_READ + 'SELECT name FROM pragma_table_info(?)').bind(table).all<{ name: string }>();
   const exists = res.results?.some(r => r.name === column) ?? false;
   if (!exists) await db.exec(ddl);
 }
@@ -93,7 +93,7 @@ async function getClientIp(request: Request): Promise<string> {
 
 async function verifyOperationToken(db: D1Database, token: string): Promise<boolean> {
   const config = await db.prepare(
-    'SELECT operation_token_hash FROM config WHERE id = ?'
+    PRIMARY_READ + 'SELECT operation_token_hash FROM config WHERE id = ?'
   ).bind('app_config').first<{ operation_token_hash: string }>();
   if (!config || !config.operation_token_hash) return false;
   const tokenHash = await hexSha256(token);
@@ -102,7 +102,7 @@ async function verifyOperationToken(db: D1Database, token: string): Promise<bool
 
 async function checkOperationToken(db: D1Database, token: string | undefined, bootstrapToken?: string, envSetupToken?: string): Promise<Response | null> {
   const config = await db.prepare(
-    'SELECT init_completed, operation_token_hash FROM config WHERE id = ?'
+    PRIMARY_READ + 'SELECT init_completed, operation_token_hash FROM config WHERE id = ?'
   ).bind('app_config').first<{ init_completed: number; operation_token_hash: string }>();
   if (!config || config.init_completed !== 1) {
     if (typeof bootstrapToken === 'string' && bootstrapToken.length <= 256 && envSetupToken && constantTimeEqual(bootstrapToken, envSetupToken)) return null;
@@ -117,7 +117,7 @@ async function checkOperationToken(db: D1Database, token: string | undefined, bo
 
 async function requireVerificationToken(request: Request, db: D1Database): Promise<Response | null> {
   const config = await db.prepare(
-    'SELECT init_completed, verification_token, verification_token_hash FROM config WHERE id = ?'
+    PRIMARY_READ + 'SELECT init_completed, verification_token, verification_token_hash FROM config WHERE id = ?'
   ).bind('app_config').first<{ init_completed: number; verification_token: string; verification_token_hash: string }>();
   if (!config || config.init_completed !== 1) return errorResponse('unauthorized', 401);
   const token = request.headers.get('X-Verification-Token');
@@ -177,9 +177,15 @@ const RATE_LOCK_MS = 600000;
 const RATE_MAX_WRITE = 40;
 const RATE_MAX_READ = 100;
 
+// D1 replicates reads to nearby replicas by default; a read that lands on a
+// replica can briefly miss the latest write (e.g. login succeeds against the
+// primary config row, then the note list query hits a stale replica and
+// returns empty). Prefixing reads with this hint forces the primary instance.
+const PRIMARY_READ = '/* d1_primary */ ';
+
 async function writeRateLimit(db: D1Database, key: string, max: number = RATE_MAX_WRITE): Promise<Response | null> {
   const now = Date.now();
-  let row = await db.prepare('SELECT * FROM auth_limits WHERE key = ?')
+  let row = await db.prepare(PRIMARY_READ + 'SELECT * FROM auth_limits WHERE key = ?')
     .bind(key).first<{ key: string; attempts: number; window_start: number; locked_until: number }>();
   if (row && row.locked_until > now) {
     return jsonResponse({ error: 'rate_limited', retry_after: Math.ceil((row.locked_until - now) / 1000) }, 429);
@@ -303,7 +309,7 @@ self.addEventListener('fetch',e=>e.respondWith(fetch(e.request).catch(()=>new Re
       let dbBound = false;
       try {
         const config = await env.DB.prepare(
-          'SELECT init_completed, kdf_version FROM config WHERE id = ?'
+          PRIMARY_READ + 'SELECT init_completed, kdf_version FROM config WHERE id = ?'
         ).bind('app_config').first<{ init_completed: number; kdf_version: number }>();
         dbBound = true;
         return jsonResponse({
@@ -326,7 +332,7 @@ self.addEventListener('fetch',e=>e.respondWith(fetch(e.request).catch(()=>new Re
       const rl = await writeRateLimit(env.DB, 'token:' + ip, RATE_MAX_READ);
       if (rl) return rl;
       const config = await env.DB.prepare(
-        'SELECT salt, audit_public_key FROM config WHERE id = ?'
+        PRIMARY_READ + 'SELECT salt, audit_public_key FROM config WHERE id = ?'
       ).bind('app_config').first<{ salt: string; audit_public_key: string }>();
       if (!config) return errorResponse('not_initialized', 404);
       return jsonResponse({
@@ -338,7 +344,7 @@ self.addEventListener('fetch',e=>e.respondWith(fetch(e.request).catch(()=>new Re
     // POST /api/init — initialize vault
     if (path === `${API_PREFIX}/init` && method === 'POST') {
       const existing = await env.DB.prepare(
-        'SELECT init_completed FROM config WHERE id = ?'
+        PRIMARY_READ + 'SELECT init_completed FROM config WHERE id = ?'
       ).bind('app_config').first<{ init_completed: number }>();
       if (existing && existing.init_completed === 1) {
         return errorResponse('already_initialized', 409);
@@ -405,10 +411,10 @@ self.addEventListener('fetch',e=>e.respondWith(fetch(e.request).catch(()=>new Re
         ? "WHERE is_test != 1 AND deleted = 1"
         : "WHERE is_test != 1 AND deleted != 1";
       const totalRow = await env.DB.prepare(
-        `SELECT COUNT(*) as cnt FROM notes ${whereClause}`
+        PRIMARY_READ + `SELECT COUNT(*) as cnt FROM notes ${whereClause}`
       ).first<{ cnt: number }>();
       const rows = await env.DB.prepare(
-        `SELECT id, encrypted_meta_packet, is_test, deleted, created_at, updated_at FROM notes ${whereClause} ORDER BY id ASC LIMIT ? OFFSET ?`
+        PRIMARY_READ + `SELECT id, encrypted_meta_packet, is_test, deleted, created_at, updated_at FROM notes ${whereClause} ORDER BY id ASC LIMIT ? OFFSET ?`
       ).bind(limit, offset).all<{ id: number; encrypted_meta_packet: string; is_test: number; deleted: number }>();
       return jsonResponse({ notes: rows.results, total: totalRow?.cnt ?? 0, offset, limit });
     }
@@ -438,7 +444,7 @@ self.addEventListener('fetch',e=>e.respondWith(fetch(e.request).catch(()=>new Re
 
       const noteId = Number(noteMatch[1]);
       const row = await env.DB.prepare(
-        'SELECT id, encrypted_meta_packet, encrypted_body, created_at, updated_at, deleted FROM notes WHERE id = ?'
+        PRIMARY_READ + 'SELECT id, encrypted_meta_packet, encrypted_body, created_at, updated_at, deleted FROM notes WHERE id = ?'
       ).bind(noteId).first<{ id: number; encrypted_meta_packet: string; encrypted_body: string; deleted: number }>();
       if (!row || row.deleted === 1) return errorResponse('not_found', 404);
       return jsonResponse({
@@ -559,9 +565,9 @@ self.addEventListener('fetch',e=>e.respondWith(fetch(e.request).catch(()=>new Re
       const rawOffset = Number(url.searchParams.get('offset'));
       const limit = Number.isFinite(rawLimit) && rawLimit >= 1 ? Math.min(200, Math.floor(rawLimit)) : 50;
       const offset = Number.isFinite(rawOffset) && rawOffset > 0 ? Math.floor(rawOffset) : 0;
-      const totalRow = await env.DB.prepare('SELECT COUNT(*) as cnt FROM audit_logs').first<{ cnt: number }>();
+      const totalRow = await env.DB.prepare(PRIMARY_READ + 'SELECT COUNT(*) as cnt FROM audit_logs').first<{ cnt: number }>();
       const rows = await env.DB.prepare(
-        'SELECT id, encrypted_entry, created_at FROM audit_logs ORDER BY id DESC LIMIT ? OFFSET ?'
+        PRIMARY_READ + 'SELECT id, encrypted_entry, created_at FROM audit_logs ORDER BY id DESC LIMIT ? OFFSET ?'
       ).bind(limit, offset).all();
       return jsonResponse({ entries: rows.results, total: totalRow?.cnt ?? 0 });
     }
