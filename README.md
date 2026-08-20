@@ -204,15 +204,15 @@ npm run setup      # 一键 D1 创建 + 部署
 浏览器 (加密操作)                  Cloudflare Worker              D1 Database
       │                                  │                          │
       │── POST /api/init ────────────────→│── INSERT config ────────→│
-      │   {setup_token, verification_token,   │  存 verification_token   │
-      │    salt, operation_token_hash}         │  SHA-256 哈希            │
+      │   {setup_token, verification_token,   │  存 SHA-256 哈希         │
+      │    salt, operation_token_hash}         │  而非明文               │
       │                                  │                          │
       │── PUT /api/note/:id ─────────────→│── UPDATE notes ─────────→│
       │   {operation_token, encrypted_*}  │  密文存储               │
       │                                  │                          │
       │── POST /api/audit/log ───────────→│── INSERT audit_logs ────→│
-      │   {verification_token,            │  加密存储               │
-      │    encrypted_entry, fp_hash}      │                          │
+      │   {encrypted_entry,               │  加密存储               │
+      │    fingerprint_hash}              │                          │
       │                                  │                          │
       │── GET /api/note/:id ←────────────│── SELECT ────────────────│
       │   密文返回                        │  返回密文               │
@@ -246,7 +246,7 @@ echo "BASE64_ENTRY" | openssl base64 -d | openssl pkeyutl -decrypt \
 ### 认证头
 
 ```
-X-Verification-Token: <hex_token>    # 所有 GET 请求（除 /api/init-check）
+X-Verification-Token: <hex_token>    # 所有已认证请求（除 /api/init-check、/api/token）
 operation_token: <hex_token>          # 所有 POST/PUT/PATCH/DELETE 请求体字段
 ```
 

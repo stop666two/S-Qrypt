@@ -74,7 +74,7 @@ for (const file of FILES) {
   const parts = extractJS(content, file);
   if (!parts) continue;
 
-  const obfJS = obfuscateJS(parts.js);
+  const obfJS = obfuscateJS(parts.js).replace(/<\/script>/gi, '<\\/script>');
   console.log(`  JS length: ${parts.js.length} chars → obfuscated: ${obfJS.length} chars`);
   const newContent = parts.before + '<script>' + obfJS + '</script>' + parts.after;
   if (!newContent.includes('<script>') || !newContent.includes('</script>')) {

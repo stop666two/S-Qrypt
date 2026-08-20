@@ -120,8 +120,12 @@ async function deployWorker() {
 function restorePlaceholder() {
   try {
     let config = readFileSync(wranglerPath, 'utf8');
-    config = replaceDatabaseId(config, '00000000-0000-0000-0000-000000000000');
-    writeFileSync(wranglerPath, config, 'utf8');
+    const updated = replaceDatabaseId(config, '00000000-0000-0000-0000-000000000000');
+    if (updated === config) {
+      console.warn('   ⚠ database_id 已是占位符，无需恢复');
+      return;
+    }
+    writeFileSync(wranglerPath, updated, 'utf8');
   } catch (e) {
     console.warn('恢复占位符失败: ' + e.message);
   }

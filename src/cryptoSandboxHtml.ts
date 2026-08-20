@@ -1,5 +1,4 @@
 export const cryptoSandboxHtml = `<!DOCTYPE html><html><head><meta charset="UTF-8"></head><body><script src="/argon2.js"></script><script>
-const ctx='S-Qrypt-v2:PreMix',ctxB=new TextEncoder().encode(ctx),saltB=new TextEncoder().encode('S-Qrypt-Final');
 function hex(b){return Array.from(new Uint8Array(b)).map(x=>x.toString(16).padStart(2,'0')).join('')}
 function b64(b){let s='';for(let i=0;i<b.length;i++)s+=String.fromCharCode(b[i]);return btoa(s)}
 function fromB64(s){const b=atob(s),r=new Uint8Array(b.length);for(let i=0;i<b.length;i++)r[i]=b.charCodeAt(i);return r}

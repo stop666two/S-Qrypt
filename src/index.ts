@@ -163,6 +163,15 @@ function validateString(v: unknown, maxLen: number): v is string {
   return typeof v === 'string' && v.length > 0 && v.length <= maxLen;
 }
 
+async function parseJsonBody(request: Request): Promise<Record<string, unknown> | null> {
+  try {
+    const v: unknown = await request.json();
+    return typeof v === 'object' && v !== null ? (v as Record<string, unknown>) : null;
+  } catch {
+    return null;
+  }
+}
+
 const RATE_WINDOW_MS = 300000;
 const RATE_LOCK_MS = 600000;
 const RATE_MAX_WRITE = 40;
@@ -346,7 +355,7 @@ self.addEventListener('fetch',e=>e.respondWith(fetch(e.request).catch(()=>new Re
       try {
         body = await request.json();
       } catch {
-        return errorResponse('invalid_json');
+        return errorResponse('invalid_json', 400);
       }
       if (!env.SETUP_TOKEN) return errorResponse('setup_token_not_configured', 503);
       const ip = await getClientIp(request);
@@ -406,10 +415,10 @@ self.addEventListener('fetch',e=>e.respondWith(fetch(e.request).catch(()=>new Re
 
     // POST /api/note — create placeholder note
     if (path === `${API_PREFIX}/note` && method === 'POST') {
-      let body: any;
-      try { body = await request.json(); } catch { return errorResponse('invalid_json', 400); }
-      if (!validateString(body?.operation_token, 128)) return errorResponse('invalid_token', 400);
-      const opRes = await checkOperationToken(env.DB, body.operation_token, body.setup_token, env.SETUP_TOKEN);
+      const body = await parseJsonBody(request);
+      if (!body) return errorResponse('invalid_json', 400);
+      if (!validateString(body.operation_token, 128)) return errorResponse('invalid_token', 400);
+      const opRes = await checkOperationToken(env.DB, body.operation_token, body.setup_token as string | undefined, env.SETUP_TOKEN);
       if (opRes) return opRes;
       const ip = await getClientIp(request);
       const rl = await writeRateLimit(env.DB, 'write:' + ip);
@@ -441,16 +450,17 @@ self.addEventListener('fetch',e=>e.respondWith(fetch(e.request).catch(()=>new Re
 
     // PUT /api/note/:id — update note
     if (noteMatch && method === 'PUT') {
-      let body: any;
-      try { body = await request.json(); } catch { return errorResponse('invalid_json', 400); }
-      if (!validateString(body?.operation_token, 128)) return errorResponse('invalid_token', 400);
-      const opRes = await checkOperationToken(env.DB, body.operation_token, body.setup_token, env.SETUP_TOKEN);
+      const body = await parseJsonBody(request);
+      if (!body) return errorResponse('invalid_json', 400);
+      if (!validateString(body.operation_token, 128)) return errorResponse('invalid_token', 400);
+      const opRes = await checkOperationToken(env.DB, body.operation_token, body.setup_token as string | undefined, env.SETUP_TOKEN);
       if (opRes) return opRes;
 
       const noteId = Number(noteMatch[1]);
       if (!isNaN(noteId) && noteId < 1) return errorResponse('invalid_id', 400);
       if (!validateString(body.encrypted_meta_packet, 10000)) return errorResponse('invalid_meta', 400);
       if (!validateString(body.encrypted_body, 2097152)) return errorResponse('invalid_body', 400);
+      if (body.is_test !== undefined && (typeof body.is_test !== 'number' || !Number.isInteger(body.is_test) || (body.is_test !== 0 && body.is_test !== 1))) return errorResponse('invalid_is_test', 400);
       const ip = await getClientIp(request);
       const rl = await writeRateLimit(env.DB, 'write:' + ip);
       if (rl) return rl;
@@ -459,7 +469,7 @@ self.addEventListener('fetch',e=>e.respondWith(fetch(e.request).catch(()=>new Re
         (body.is_test !== undefined ? ", is_test = ?" : "") + " WHERE id = ?"
       ).bind(
         body.encrypted_meta_packet, body.encrypted_body,
-        ...(body.is_test !== undefined ? [body.is_test] : []),
+        ...(body.is_test !== undefined ? [body.is_test as number] : []),
         noteId
       ).run();
       if (result.meta.changes === 0) return errorResponse('not_found', 404);
@@ -468,10 +478,10 @@ self.addEventListener('fetch',e=>e.respondWith(fetch(e.request).catch(()=>new Re
 
     // DELETE /api/note/:id — hard delete
     if (noteMatch && method === 'DELETE') {
-      let body: any;
-      try { body = await request.json(); } catch { return errorResponse('invalid_json', 400); }
-      if (!validateString(body?.operation_token, 128)) return errorResponse('invalid_token', 400);
-      const opRes = await checkOperationToken(env.DB, body.operation_token, body.setup_token, env.SETUP_TOKEN);
+      const body = await parseJsonBody(request);
+      if (!body) return errorResponse('invalid_json', 400);
+      if (!validateString(body.operation_token, 128)) return errorResponse('invalid_token', 400);
+      const opRes = await checkOperationToken(env.DB, body.operation_token, body.setup_token as string | undefined, env.SETUP_TOKEN);
       if (opRes) return opRes;
 
       const noteId = Number(noteMatch[1]);
@@ -488,10 +498,10 @@ self.addEventListener('fetch',e=>e.respondWith(fetch(e.request).catch(()=>new Re
     // PATCH /api/note/:id/restore — restore soft-deleted note
     const restoreMatch = path.match(/^\/api\/note\/(\d+)\/restore$/);
     if (restoreMatch && method === 'PATCH') {
-      let body: any;
-      try { body = await request.json(); } catch { return errorResponse('invalid_json', 400); }
-      if (!validateString(body?.operation_token, 128)) return errorResponse('invalid_token', 400);
-      const opRes = await checkOperationToken(env.DB, body.operation_token, body.setup_token, env.SETUP_TOKEN);
+      const body = await parseJsonBody(request);
+      if (!body) return errorResponse('invalid_json', 400);
+      if (!validateString(body.operation_token, 128)) return errorResponse('invalid_token', 400);
+      const opRes = await checkOperationToken(env.DB, body.operation_token, body.setup_token as string | undefined, env.SETUP_TOKEN);
       if (opRes) return opRes;
       const noteId = Number(restoreMatch[1]);
       const ip = await getClientIp(request);
@@ -507,10 +517,10 @@ self.addEventListener('fetch',e=>e.respondWith(fetch(e.request).catch(()=>new Re
     // PATCH /api/note/:id/soft-delete — soft delete
     const softDeleteMatch = path.match(/^\/api\/note\/(\d+)\/soft-delete$/);
     if (softDeleteMatch && method === 'PATCH') {
-      let body: any;
-      try { body = await request.json(); } catch { return errorResponse('invalid_json', 400); }
-      if (!validateString(body?.operation_token, 128)) return errorResponse('invalid_token', 400);
-      const opRes = await checkOperationToken(env.DB, body.operation_token, body.setup_token, env.SETUP_TOKEN);
+      const body = await parseJsonBody(request);
+      if (!body) return errorResponse('invalid_json', 400);
+      if (!validateString(body.operation_token, 128)) return errorResponse('invalid_token', 400);
+      const opRes = await checkOperationToken(env.DB, body.operation_token, body.setup_token as string | undefined, env.SETUP_TOKEN);
       if (opRes) return opRes;
 
       const noteId = Number(softDeleteMatch[1]);
@@ -528,10 +538,10 @@ self.addEventListener('fetch',e=>e.respondWith(fetch(e.request).catch(()=>new Re
     if (path === `${API_PREFIX}/audit/log` && method === 'POST') {
       const authErr = await requireVerificationToken(request, env.DB);
       if (authErr) return authErr;
-      let body: any;
-      try { body = await request.json(); } catch { return errorResponse('invalid_json', 400); }
-      if (!validateString(body?.encrypted_entry, 5000)) return errorResponse('invalid_entry', 400);
-      if (!validateString(body?.fingerprint_hash, 64)) return errorResponse('invalid_fingerprint', 400);
+      const body = await parseJsonBody(request);
+      if (!body) return errorResponse('invalid_json', 400);
+      if (!validateString(body.encrypted_entry, 5000)) return errorResponse('invalid_entry', 400);
+      if (!validateString(body.fingerprint_hash, 64)) return errorResponse('invalid_fingerprint', 400);
       const ip = await getClientIp(request);
       const rl = await writeRateLimit(env.DB, 'audit:' + ip);
       if (rl) return rl;
@@ -558,10 +568,10 @@ self.addEventListener('fetch',e=>e.respondWith(fetch(e.request).catch(()=>new Re
 
     // PUT /api/audit/key — update audit public key (requires operation token)
     if (path === `${API_PREFIX}/audit/key` && method === 'PUT') {
-      let body: any;
-      try { body = await request.json(); } catch { return errorResponse('invalid_json', 400); }
-      if (!validateString(body?.operation_token, 128)) return errorResponse('invalid_token', 400);
-      const opRes = await checkOperationToken(env.DB, body.operation_token, body.setup_token, env.SETUP_TOKEN);
+      const body = await parseJsonBody(request);
+      if (!body) return errorResponse('invalid_json', 400);
+      if (!validateString(body.operation_token, 128)) return errorResponse('invalid_token', 400);
+      const opRes = await checkOperationToken(env.DB, body.operation_token, body.setup_token as string | undefined, env.SETUP_TOKEN);
       if (opRes) return opRes;
       if (typeof body.audit_public_key !== 'string' || body.audit_public_key.length > 10000)
         return errorResponse('invalid_key', 400);
@@ -573,10 +583,10 @@ self.addEventListener('fetch',e=>e.respondWith(fetch(e.request).catch(()=>new Re
 
     // DELETE /api/audit/logs — clear all audit logs (requires operation token)
     if (path === `${API_PREFIX}/audit/logs` && method === 'DELETE') {
-      let body: any;
-      try { body = await request.json(); } catch { return errorResponse('invalid_json', 400); }
-      if (!validateString(body?.operation_token, 128)) return errorResponse('invalid_token', 400);
-      const opRes = await checkOperationToken(env.DB, body.operation_token, body.setup_token, env.SETUP_TOKEN);
+      const body = await parseJsonBody(request);
+      if (!body) return errorResponse('invalid_json', 400);
+      if (!validateString(body.operation_token, 128)) return errorResponse('invalid_token', 400);
+      const opRes = await checkOperationToken(env.DB, body.operation_token, body.setup_token as string | undefined, env.SETUP_TOKEN);
       if (opRes) return opRes;
       await env.DB.exec('DELETE FROM audit_logs');
       return jsonResponse({ status: 'logs_cleared' });

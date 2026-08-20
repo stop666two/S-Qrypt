@@ -141,6 +141,7 @@ npm run setup</div>
 <script>
 function copyCmd(id) {
   const el = document.getElementById(id);
+  if (!el) return;
   const clone = el.cloneNode(true);
   const btn = clone.querySelector('.copy-btn');
   if (btn) btn.remove();

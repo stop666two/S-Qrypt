@@ -14,3 +14,5 @@ CREATE TABLE IF NOT EXISTS notes (
   is_test INTEGER NOT NULL DEFAULT 0 CHECK (is_test IN (0,1)),
   deleted INTEGER NOT NULL DEFAULT 0 CHECK (deleted IN (0,1))
 );
+
+CREATE INDEX IF NOT EXISTS idx_notes_active ON notes(is_test, deleted, id);

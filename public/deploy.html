@@ -168,7 +168,7 @@
     <li>添加到 GitHub Secrets → 推送 <code>main</code> 自动部署</li>
   </ol>
   <div class="btn-group">
-    <a href="https://dash.cloudflare.com/profile/api-tokens" class="btn btn-secondary" target="_blank">创建 API Token</a>
+    <a href="https://dash.cloudflare.com/profile/api-tokens" class="btn btn-secondary" target="_blank" rel="noopener noreferrer">创建 API Token</a>
   </div>
 </div>
 
@@ -208,6 +208,7 @@
 <script>
 function copyCmd(id) {
   const el = document.getElementById(id);
+  if (!el) return;
   const clone = el.cloneNode(true);
   const btn = clone.querySelector('.copy-btn');
   if (btn) btn.remove();
@@ -215,6 +216,9 @@ function copyCmd(id) {
   navigator.clipboard.writeText(text).then(() => {
     const b = el.querySelector('.copy-btn');
     if (b) { b.textContent = '已复制!'; setTimeout(() => { b.textContent = '复制'; }, 2000); }
+  }).catch(() => {
+    const b = el.querySelector('.copy-btn');
+    if (b) { b.textContent = '复制失败'; setTimeout(() => { b.textContent = '复制'; }, 2000); }
   });
 }
 </script>
