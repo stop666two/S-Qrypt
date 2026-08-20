@@ -20,42 +20,17 @@ function run(cmd, opts = {}) {
   return execSync(cmd, { encoding: 'utf8', shell: true, ...opts });
 }
 
-function parseDatabaseId(output) {
-  const m = output.match(/"database_id":\s*"([^"]+)"/)
-    || output.match(/database_id\s*=\s*"([^"]+)"/);
-  return m ? m[1] : null;
-}
-
 async function getOrCreateDatabase() {
   console.log('1. 创建/获取 D1 数据库...');
 
-  // Try creating new database
-  try {
-    const out = run(`npx wrangler d1 create ${DB_NAME}`);
-    const dbId = parseDatabaseId(out);
-    if (dbId) {
-      console.log(`   ✅ 新数据库已创建: ${DB_NAME} (ID: ${dbId})`);
-      return dbId;
-    }
-  } catch (e) {
-    const msg = [e.stdout, e.stderr, e.message].filter(Boolean).join('\n');
-    if (msg.includes('already exists')) {
-      console.log('   ℹ️  数据库已存在，尝试获取 ID...');
-    } else if (msg.includes('Authentication error') || msg.includes('10000')) {
-      throw new Error('Cloudflare 认证失败，请先运行: npx wrangler login');
-    } else {
-      throw e;
-    }
-  }
-
-  // List existing databases
+  // 先列出已有数据库，避免依赖 'already exists' 错误文案
   try {
     const listJson = run(`npx wrangler d1 list --json`);
     const dbs = JSON.parse(listJson);
-    const match = dbs.find(d => d.name === DB_NAME || d.database_name === DB_NAME);
-    if (match) {
-      const dbId = match.uuid || match.database_id;
-      console.log(`   ✅ 使用已有数据库: ${DB_NAME} (ID: ${dbId})`);
+    const existing = dbs.find(d => d.name === DB_NAME || d.database_name === DB_NAME);
+    if (existing) {
+      const dbId = existing.uuid || existing.database_id;
+      console.log(`   ℹ️  数据库已存在，获取 ID: ${DB_NAME} (ID: ${dbId})`);
       return dbId;
     }
   } catch (e) {
@@ -63,7 +38,7 @@ async function getOrCreateDatabase() {
     if (msg.includes('Authentication error') || msg.includes('10000')) {
       throw new Error('Cloudflare 认证失败，请先运行: npx wrangler login');
     }
-    // Fallback: text parse
+    // d1 list --json 失败时回退到纯文本解析
     const listOut = run(`npx wrangler d1 list`);
     for (const line of listOut.split('\n').filter(l => l.includes(DB_NAME))) {
       const id = line.trim().split(/\s+/).find(p => /^[0-9a-f]{8}-/.test(p));
@@ -74,7 +49,25 @@ async function getOrCreateDatabase() {
     }
   }
 
-  throw new Error(`无法获取数据库 "${DB_NAME}" 的信息`);
+  // 数据库不存在，创建新数据库（d1 create 无 --json 输出，创建后重新列出获取 ID）
+  try {
+    run(`npx wrangler d1 create ${DB_NAME}`);
+    const listJson2 = run(`npx wrangler d1 list --json`);
+    const dbs2 = JSON.parse(listJson2);
+    const created = dbs2.find(d => d.name === DB_NAME || d.database_name === DB_NAME);
+    const dbId = created && (created.uuid || created.database_id);
+    if (!dbId) {
+      throw new Error('创建后无法从 d1 list 解析数据库 ID');
+    }
+    console.log(`   ✅ 新数据库已创建: ${DB_NAME} (ID: ${dbId})`);
+    return dbId;
+  } catch (e) {
+    const msg = [e.stdout, e.stderr, e.message].filter(Boolean).join('\n');
+    if (msg.includes('Authentication error') || msg.includes('10000')) {
+      throw new Error('Cloudflare 认证失败，请先运行: npx wrangler login');
+    }
+    throw e;
+  }
 }
 
 function replaceDatabaseId(config, dbId) {
@@ -105,8 +98,16 @@ function replaceDatabaseId(config, dbId) {
 async function updateConfig(dbId) {
   console.log('\n2. 更新 wrangler.jsonc...');
   let config = readFileSync(wranglerPath, 'utf8');
-  config = replaceDatabaseId(config, dbId);
-  writeFileSync(wranglerPath, config, 'utf8');
+  const updated = replaceDatabaseId(config, dbId);
+  if (updated === config) {
+    const current = config.match(/"database_id":\s*"([^"]*)"/);
+    if (current && current[1] === dbId) {
+      console.log('   ✅ database_id 已是最新');
+      return;
+    }
+    throw new Error(`database_id 未发生变化，请检查 ${wranglerPath} 配置`);
+  }
+  writeFileSync(wranglerPath, updated, 'utf8');
   console.log('   ✅ database_id 已写入');
 }
 
@@ -149,8 +150,10 @@ async function main() {
     process.exit(1);
   }
 
-  if (!isCI) {
-    restorePlaceholder();
+  restorePlaceholder();
+  if (isCI) {
+    console.log('\n⚠️  CI 环境：已恢复占位符');
+  } else {
     console.log('\n⚠️  已恢复 wrangler.jsonc 占位符');
   }
 

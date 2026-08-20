@@ -69,7 +69,6 @@ async function ensureColumn(db: D1Database, table: string, column: string, ddl: 
 let schemaEnsured = false;
 async function ensureSchema(db: D1Database): Promise<void> {
   if (schemaEnsured) return;
-  schemaEnsured = true;
   await db.exec(
     "CREATE TABLE IF NOT EXISTS config (id TEXT PRIMARY KEY, verification_token TEXT NOT NULL, verification_token_hash TEXT NOT NULL DEFAULT '', operation_token_hash TEXT NOT NULL DEFAULT '', init_completed INTEGER NOT NULL DEFAULT 0, kdf_version INTEGER NOT NULL DEFAULT 1, salt TEXT NOT NULL DEFAULT '')"
   );
@@ -77,7 +76,7 @@ async function ensureSchema(db: D1Database): Promise<void> {
   await ensureColumn(db, 'config', 'salt', "ALTER TABLE config ADD COLUMN salt TEXT NOT NULL DEFAULT ''");
   await ensureColumn(db, 'config', 'audit_public_key', "ALTER TABLE config ADD COLUMN audit_public_key TEXT NOT NULL DEFAULT ''");
   await db.exec(
-    "CREATE TABLE IF NOT EXISTS notes (id INTEGER PRIMARY KEY AUTOINCREMENT, encrypted_meta_packet TEXT NOT NULL DEFAULT '', encrypted_body TEXT NOT NULL DEFAULT '', is_test INTEGER NOT NULL DEFAULT 0, deleted INTEGER NOT NULL DEFAULT 0, created_at TEXT DEFAULT (datetime('now')), updated_at TEXT DEFAULT (datetime('now')))"
+    "CREATE TABLE IF NOT EXISTS notes (id INTEGER PRIMARY KEY AUTOINCREMENT, encrypted_meta_packet TEXT NOT NULL DEFAULT '', encrypted_body TEXT NOT NULL DEFAULT '', is_test INTEGER NOT NULL DEFAULT 0 CHECK (is_test IN (0,1)), deleted INTEGER NOT NULL DEFAULT 0 CHECK (deleted IN (0,1)), created_at TEXT DEFAULT (datetime('now')), updated_at TEXT DEFAULT (datetime('now')))"
   );
   await ensureColumn(db, 'notes', 'created_at', "ALTER TABLE notes ADD COLUMN created_at TEXT DEFAULT (datetime('now'))");
   await ensureColumn(db, 'notes', 'updated_at', "ALTER TABLE notes ADD COLUMN updated_at TEXT DEFAULT (datetime('now'))");
@@ -85,6 +84,7 @@ async function ensureSchema(db: D1Database): Promise<void> {
   await db.exec("CREATE TABLE IF NOT EXISTS audit_logs (id INTEGER PRIMARY KEY AUTOINCREMENT, encrypted_entry TEXT NOT NULL, fingerprint_hash TEXT NOT NULL, created_at TEXT DEFAULT (datetime('now')))");
   await db.exec("CREATE INDEX IF NOT EXISTS idx_audit_created ON audit_logs(created_at)");
   try { await db.exec("CREATE INDEX IF NOT EXISTS idx_notes_active ON notes(is_test, deleted, id)"); } catch (e) { console.warn('[s-qrypt] create idx_notes_active failed:', e instanceof Error ? e.message : e); }
+  schemaEnsured = true;
 }
 
 async function getClientIp(request: Request): Promise<string> {
@@ -100,12 +100,15 @@ async function verifyOperationToken(db: D1Database, token: string): Promise<bool
   return constantTimeEqual(tokenHash, config.operation_token_hash);
 }
 
-async function checkOperationToken(db: D1Database, token: string | undefined): Promise<Response | null> {
+async function checkOperationToken(db: D1Database, token: string | undefined, bootstrapToken?: string, envSetupToken?: string): Promise<Response | null> {
   const config = await db.prepare(
     'SELECT init_completed, operation_token_hash FROM config WHERE id = ?'
   ).bind('app_config').first<{ init_completed: number; operation_token_hash: string }>();
-  if (!config || config.init_completed !== 1) return null;
-  if (!config.operation_token_hash) return null;
+  if (!config || config.init_completed !== 1) {
+    if (typeof bootstrapToken === 'string' && bootstrapToken.length <= 256 && envSetupToken && constantTimeEqual(bootstrapToken, envSetupToken)) return null;
+    return errorResponse('forbidden', 403);
+  }
+  if (!config.operation_token_hash) return errorResponse('forbidden', 403);
   if (!token) return errorResponse('missing_operation_token', 403);
   const valid = await verifyOperationToken(db, token);
   if (!valid) return errorResponse('forbidden', 403);
@@ -116,7 +119,7 @@ async function requireVerificationToken(request: Request, db: D1Database): Promi
   const config = await db.prepare(
     'SELECT init_completed, verification_token, verification_token_hash FROM config WHERE id = ?'
   ).bind('app_config').first<{ init_completed: number; verification_token: string; verification_token_hash: string }>();
-  if (!config || config.init_completed !== 1) return null;
+  if (!config || config.init_completed !== 1) return errorResponse('unauthorized', 401);
   const token = request.headers.get('X-Verification-Token');
   if (!token) return errorResponse('unauthorized', 401);
   if (config.verification_token_hash) {
@@ -141,10 +144,16 @@ function csrfCheck(request: Request): Response | null {
   const origin = request.headers.get('Origin');
   const referer = request.headers.get('Referer');
   if (!origin && !referer) return null;
-  const allowed = (s: string) =>
-    s.startsWith('https://') ||
-    s.startsWith('http://127.0.0.1') ||
-    s.startsWith('http://localhost');
+  const allowed = (s: string) => {
+    try {
+      const u = new URL(s);
+      if (u.protocol === 'https:') return true;
+      if (u.protocol === 'http:' && (u.hostname === '127.0.0.1' || u.hostname === 'localhost')) return true;
+      return false;
+    } catch {
+      return false;
+    }
+  };
   if (origin && !allowed(origin)) return jsonResponse({ error: 'forbidden_origin' }, 403);
   if (referer && !allowed(referer)) return jsonResponse({ error: 'forbidden_referer' }, 403);
   return null;
@@ -343,7 +352,7 @@ self.addEventListener('fetch',e=>e.respondWith(fetch(e.request).catch(()=>new Re
       const ip = await getClientIp(request);
       const rl = await writeRateLimit(env.DB, 'init:' + ip, 20);
       if (rl) return rl;
-      if (typeof body.setup_token !== 'string' || !constantTimeEqual(body.setup_token, env.SETUP_TOKEN)) {
+      if (typeof body.setup_token !== 'string' || body.setup_token.length > 256 || !constantTimeEqual(body.setup_token, env.SETUP_TOKEN)) {
         return errorResponse('invalid_setup_token', 403);
       }
       if (!body.verification_token) return errorResponse('missing_verification_token');
@@ -378,8 +387,10 @@ self.addEventListener('fetch',e=>e.respondWith(fetch(e.request).catch(()=>new Re
       const authErr = await requireVerificationToken(request, env.DB);
       if (authErr) return authErr;
 
-      const offset = Math.max(0, parseInt(url.searchParams.get('offset') || '0'));
-      const limit = Math.min(100, Math.max(1, parseInt(url.searchParams.get('limit') || '50')));
+      const rawOffset = Number(url.searchParams.get('offset'));
+      const rawLimit = Number(url.searchParams.get('limit'));
+      const offset = Number.isFinite(rawOffset) && rawOffset > 0 ? Math.floor(rawOffset) : 0;
+      const limit = Number.isFinite(rawLimit) && rawLimit >= 1 ? Math.min(100, Math.floor(rawLimit)) : 50;
       const showDeleted = url.searchParams.get('deleted') === '1';
       const whereClause = showDeleted
         ? "WHERE is_test != 1 AND deleted = 1"
@@ -398,7 +409,7 @@ self.addEventListener('fetch',e=>e.respondWith(fetch(e.request).catch(()=>new Re
       let body: any;
       try { body = await request.json(); } catch { return errorResponse('invalid_json', 400); }
       if (!validateString(body?.operation_token, 128)) return errorResponse('invalid_token', 400);
-      const opRes = await checkOperationToken(env.DB, body.operation_token);
+      const opRes = await checkOperationToken(env.DB, body.operation_token, body.setup_token, env.SETUP_TOKEN);
       if (opRes) return opRes;
       const ip = await getClientIp(request);
       const rl = await writeRateLimit(env.DB, 'write:' + ip);
@@ -433,7 +444,7 @@ self.addEventListener('fetch',e=>e.respondWith(fetch(e.request).catch(()=>new Re
       let body: any;
       try { body = await request.json(); } catch { return errorResponse('invalid_json', 400); }
       if (!validateString(body?.operation_token, 128)) return errorResponse('invalid_token', 400);
-      const opRes = await checkOperationToken(env.DB, body.operation_token);
+      const opRes = await checkOperationToken(env.DB, body.operation_token, body.setup_token, env.SETUP_TOKEN);
       if (opRes) return opRes;
 
       const noteId = Number(noteMatch[1]);
@@ -460,7 +471,7 @@ self.addEventListener('fetch',e=>e.respondWith(fetch(e.request).catch(()=>new Re
       let body: any;
       try { body = await request.json(); } catch { return errorResponse('invalid_json', 400); }
       if (!validateString(body?.operation_token, 128)) return errorResponse('invalid_token', 400);
-      const opRes = await checkOperationToken(env.DB, body.operation_token);
+      const opRes = await checkOperationToken(env.DB, body.operation_token, body.setup_token, env.SETUP_TOKEN);
       if (opRes) return opRes;
 
       const noteId = Number(noteMatch[1]);
@@ -480,7 +491,7 @@ self.addEventListener('fetch',e=>e.respondWith(fetch(e.request).catch(()=>new Re
       let body: any;
       try { body = await request.json(); } catch { return errorResponse('invalid_json', 400); }
       if (!validateString(body?.operation_token, 128)) return errorResponse('invalid_token', 400);
-      const opRes = await checkOperationToken(env.DB, body.operation_token);
+      const opRes = await checkOperationToken(env.DB, body.operation_token, body.setup_token, env.SETUP_TOKEN);
       if (opRes) return opRes;
       const noteId = Number(restoreMatch[1]);
       const ip = await getClientIp(request);
@@ -499,7 +510,7 @@ self.addEventListener('fetch',e=>e.respondWith(fetch(e.request).catch(()=>new Re
       let body: any;
       try { body = await request.json(); } catch { return errorResponse('invalid_json', 400); }
       if (!validateString(body?.operation_token, 128)) return errorResponse('invalid_token', 400);
-      const opRes = await checkOperationToken(env.DB, body.operation_token);
+      const opRes = await checkOperationToken(env.DB, body.operation_token, body.setup_token, env.SETUP_TOKEN);
       if (opRes) return opRes;
 
       const noteId = Number(softDeleteMatch[1]);
@@ -534,8 +545,10 @@ self.addEventListener('fetch',e=>e.respondWith(fetch(e.request).catch(()=>new Re
     if (path === `${API_PREFIX}/audit/logs` && method === 'GET') {
       const authErr = await requireVerificationToken(request, env.DB);
       if (authErr) return authErr;
-      const limit = Math.min(200, Math.max(1, parseInt(url.searchParams.get('limit') || '50')));
-      const offset = Math.max(0, parseInt(url.searchParams.get('offset') || '0'));
+      const rawLimit = Number(url.searchParams.get('limit'));
+      const rawOffset = Number(url.searchParams.get('offset'));
+      const limit = Number.isFinite(rawLimit) && rawLimit >= 1 ? Math.min(200, Math.floor(rawLimit)) : 50;
+      const offset = Number.isFinite(rawOffset) && rawOffset > 0 ? Math.floor(rawOffset) : 0;
       const totalRow = await env.DB.prepare('SELECT COUNT(*) as cnt FROM audit_logs').first<{ cnt: number }>();
       const rows = await env.DB.prepare(
         'SELECT id, encrypted_entry, created_at FROM audit_logs ORDER BY id DESC LIMIT ? OFFSET ?'
@@ -548,7 +561,7 @@ self.addEventListener('fetch',e=>e.respondWith(fetch(e.request).catch(()=>new Re
       let body: any;
       try { body = await request.json(); } catch { return errorResponse('invalid_json', 400); }
       if (!validateString(body?.operation_token, 128)) return errorResponse('invalid_token', 400);
-      const opRes = await checkOperationToken(env.DB, body.operation_token);
+      const opRes = await checkOperationToken(env.DB, body.operation_token, body.setup_token, env.SETUP_TOKEN);
       if (opRes) return opRes;
       if (typeof body.audit_public_key !== 'string' || body.audit_public_key.length > 10000)
         return errorResponse('invalid_key', 400);
@@ -563,7 +576,7 @@ self.addEventListener('fetch',e=>e.respondWith(fetch(e.request).catch(()=>new Re
       let body: any;
       try { body = await request.json(); } catch { return errorResponse('invalid_json', 400); }
       if (!validateString(body?.operation_token, 128)) return errorResponse('invalid_token', 400);
-      const opRes = await checkOperationToken(env.DB, body.operation_token);
+      const opRes = await checkOperationToken(env.DB, body.operation_token, body.setup_token, env.SETUP_TOKEN);
       if (opRes) return opRes;
       await env.DB.exec('DELETE FROM audit_logs');
       return jsonResponse({ status: 'logs_cleared' });

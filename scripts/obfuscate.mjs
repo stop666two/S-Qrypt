@@ -80,6 +80,9 @@ for (const file of FILES) {
   if (!newContent.includes('<script>') || !newContent.includes('</script>')) {
     throw new Error(`Invalid output for ${file}: missing <script> markers`);
   }
+  if (newContent === content) {
+    throw new Error(`No changes for ${file}: output equals input`);
+  }
   writeFileSync(path, newContent, 'utf-8');
   console.log(`  Written to ${file}`);
 }

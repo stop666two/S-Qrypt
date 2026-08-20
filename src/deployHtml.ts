@@ -148,6 +148,9 @@ function copyCmd(id) {
   navigator.clipboard.writeText(text).then(() => {
     const b = el.querySelector('.copy-btn');
     if (b) { b.textContent = '已复制!'; setTimeout(() => { b.textContent = '复制'; }, 2000); }
+  }).catch(() => {
+    const b = el.querySelector('.copy-btn');
+    if (b) { b.textContent = '复制失败'; setTimeout(() => { b.textContent = '复制'; }, 2000); }
   });
 }
 </script>

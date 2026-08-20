@@ -56,6 +56,8 @@ declare class Headers {
 
 declare class URL {
   constructor(url: string, base?: string);
+  readonly protocol: string;
+  readonly hostname: string;
   readonly pathname: string;
   readonly searchParams: URLSearchParams;
   readonly href: string;
@@ -87,8 +89,8 @@ declare interface SubtleCrypto {
     extractable: boolean,
     keyUsages: string[]
   ): Promise<CryptoKey>;
-  encrypt(algorithm: any, key: CryptoKey, data: BufferSource): Promise<ArrayBuffer>;
-  decrypt(algorithm: any, key: CryptoKey, data: BufferSource): Promise<ArrayBuffer>;
+  encrypt(algorithm: string | Algorithm, key: CryptoKey, data: BufferSource): Promise<ArrayBuffer>;
+  decrypt(algorithm: string | Algorithm, key: CryptoKey, data: BufferSource): Promise<ArrayBuffer>;
   sign(algorithm: string | Algorithm, key: CryptoKey, data: BufferSource): Promise<ArrayBuffer>;
 }
 
@@ -105,7 +107,7 @@ interface D1Database {
 }
 
 interface D1PreparedStatement {
-  bind(...values: any[]): D1PreparedStatement;
+  bind(...values: unknown[]): D1PreparedStatement;
   first<T = unknown>(col?: string): Promise<T | null>;
   all<T = unknown>(): Promise<D1Result<T>>;
   run(): Promise<D1Result>;

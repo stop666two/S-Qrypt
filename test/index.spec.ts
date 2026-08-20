@@ -35,14 +35,36 @@ describe('S-Qrypt v1.0.0 API', () => {
     expect(status).toBe(404);
   });
 
-  it('allows write operations before init (init flow)', async () => {
-    // Before init, requireOperationToken returns null (allows)
+  it('rejects write before init without setup token (fail-closed)', async () => {
+    // Before init, writes fail closed: anonymous write is forbidden
     const { status, data } = await jsonFetch('/api/note', {
       method: 'POST',
       body: JSON.stringify({ operation_token: 'any_token_before_init' }),
     });
+    expect(status).toBe(403);
+    expect(data.error).toBe('forbidden');
+  });
+
+  it('rejects bootstrap write with wrong setup token', async () => {
+    const { status } = await jsonFetch('/api/note', {
+      method: 'POST',
+      body: JSON.stringify({ operation_token: 'any_token_before_init', setup_token: 'wrong-setup-token' }),
+    });
+    expect(status).toBe(403);
+  });
+
+  it('allows bootstrap write with valid setup token (init flow)', async () => {
+    const { status, data } = await jsonFetch('/api/note', {
+      method: 'POST',
+      body: JSON.stringify({ operation_token: 'any_token_before_init', setup_token: 'test-setup-token' }),
+    });
     expect(status).toBe(201);
     expect(data.id).toBe(1);
+  });
+
+  it('rejects notes read before init without verification token (fail-closed)', async () => {
+    const { status } = await jsonFetch('/api/notes?offset=0&limit=1');
+    expect(status).toBe(401);
   });
 
   it('rejects init with wrong setup token', async () => {
@@ -67,6 +89,7 @@ describe('S-Qrypt v1.0.0 API', () => {
         encrypted_meta_packet: 'dGVzdF9tZXRh',
         encrypted_body: 'dGVzdF9ib2R5',
         is_test: 1,
+        setup_token: 'test-setup-token',
       }),
     });
     // Then call init
