@@ -4,7 +4,7 @@
   "private": true,
   "scripts": {
     "build": "tsc --noEmit",
-    "deploy": "git diff --quiet -- src/homeHtml.ts src/cryptoSandboxHtml.ts || (echo error: uncommitted changes in src/homeHtml.ts or src/cryptoSandboxHtml.ts would be destroyed by deploy, commit or stash first && exit 1) && tsc --noEmit && node scripts/obfuscate.mjs && wrangler deploy && git checkout -- src/homeHtml.ts src/cryptoSandboxHtml.ts",
+    "deploy": "node scripts/check-clean.mjs && tsc --noEmit && node scripts/obfuscate.mjs && wrangler deploy && git checkout -- src/homeHtml.ts src/cryptoSandboxHtml.ts",
     "deploy:quick": "tsc --noEmit && wrangler deploy",
     "dev": "wrangler dev",
     "start": "wrangler dev",

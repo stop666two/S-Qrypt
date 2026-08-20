@@ -52,6 +52,9 @@
   - worker-configuration.d.ts 类型收紧（waitUntil Promise<unknown>）
   - deploy.html `rel="noopener noreferrer"`、copyCmd 空值防护与剪贴板错误提示
   - migrations/0001_init.sql 末尾追加索引（新库生效，旧库由 ensureSchema 兜底）
+- **部署流水线（2026-08-20）**
+  - 修复 deploy 脚本运算符优先级 bug：`git diff --quiet ... || (...) && ...` 中 `&&` 先于 `||` 求值，工作区干净时整条部署链被短路，npm run deploy 从不真正部署；改为 scripts/check-clean.mjs 前置检查 + 纯 `&&` 链
+  - wrangler.jsonc 写入真实 D1 database_id（s-qrypt-db）
 
 ### Security
 
