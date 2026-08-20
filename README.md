@@ -138,8 +138,9 @@ Schema 由 Worker 启动时自动创建，无需手动迁移。
 ```bash
 npm run dev        # 启动开发服务器 (http://127.0.0.1:8787)
 npm test           # 运行测试
-npm run deploy     # 生产部署（包含 JS 混淆）
-npm run setup      # 一键 D1 创建 + 部署
+npm run deploy       # 生产部署（包含 JS 混淆）
+npm run deploy:quick # dev-only：跳过混淆与测试，仅本地快速验证，勿用于生产
+npm run setup        # 一键 D1 创建 + 部署
 ```
 
 **注意事项：** 前端 SPA 嵌入在 `src/homeHtml.ts` 模板字符串中；沙箱页面在 `src/cryptoSandboxHtml.ts` 中。修改后需重启 `npm run dev`。
