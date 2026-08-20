@@ -37,3 +37,9 @@ AGENT.md
 AGENT.txt
 agent-readme.md
 RULES.md
+
+# 安全扫描/诊断产物（禁止上传）
+*.jsonl
+decode_scan.py
+scan-review-report.md
+_review_diff.txt
