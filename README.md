@@ -186,7 +186,7 @@ npm run setup        # 一键 D1 创建 + 部署
 | **密钥** | 沙箱 iframe 隔离 | 密钥仅在线性内存中，主页面不可直接访问 |
 | **令牌** | HKDF 派生 operation_token | 每次写操作需携带，防 CSRF/越权 |
 | **频率** | 写操作 + 读操作分离 Rate Limit | 写 40 次/5 分钟，读 100 次/5 分钟，超限锁定 10 分钟 |
-| **认证** | 随机盐值 verification_token | 防御彩虹表攻击，旧保险箱自动兼容 |
+| **认证** | 随机盐值 verification_token | 防御彩虹表攻击；服务端仅存 SHA-256 哈希，旧库明文 token 首次校验后自动迁移为哈希 |
 | **审计** | HMAC 签名链 + RSA-OAEP 加密 | 防篡改审计日志，私钥离线解密 |
 | **侧信道** | 恒定时间比较 + 随机延迟填充 | 防御时序攻击 |
 
@@ -242,7 +242,7 @@ echo "BASE64_ENTRY" | openssl base64 -d | openssl pkeyutl -decrypt \
 
 ## API 文档
 
-所有端点前缀为 `/api`，请求和响应均为 `application/json`。所有写操作需携带 `operation_token`（HKDF 派生）和 `X-Verification-Token` 请求头。读操作需携带 `X-Verification-Token` 请求头。频率限制基于 IP 地址，写操作与读操作分离计数。
+所有端点前缀为 `/api`，请求和响应均为 `application/json`。所有写操作需携带 `operation_token`（HKDF 派生）和 `X-Verification-Token` 请求头。读操作需携带 `X-Verification-Token` 请求头。保险箱未初始化时，引导阶段的写操作（POST /api/note、PUT /api/note/:id）还需在请求体中携带 `setup_token`（与 SETUP_TOKEN 一致）。频率限制基于 IP 地址，写操作与读操作分离计数。
 
 ### 认证头
 
@@ -297,13 +297,13 @@ operation_token: <hex_token>          # 所有 POST/PUT/PATCH/DELETE 请求体�
 
 | 状态码 | error 字段 | 说明 |
 |--------|-----------|------|
-| 400 | `invalid_json`, `missing_fields`, `invalid_token` | 请求格式错误 |
-| 401 | `unauthorized` | X-Verification-Token 无效 |
-| 403 | `forbidden`, `forbidden_origin` | operation_token 无效或 CSRF 拦截 |
+| 400 | `invalid_json`, `invalid_token`, `invalid_body`, `invalid_id`, `invalid_meta`, `invalid_is_test`, `invalid_key`, `invalid_entry`, `invalid_fingerprint`, `missing_verification_token`, `missing_operation_token_hash` | 请求格式或字段校验失败 |
+| 401 | `unauthorized` | X-Verification-Token 无效，或保险箱未初始化 |
+| 403 | `forbidden`, `forbidden_origin`, `invalid_setup_token`, `missing_operation_token` | operation_token 无效 / CSRF 拦截 / setup_token 错误或缺失 |
 | 404 | `not_found`, `not_initialized` | 资源不存在或未初始化 |
 | 409 | `already_initialized` | 保险箱已初始化 |
-| 413 | `meta_too_large`, `body_too_large`, `entry_too_large` | 数据超限 |
 | 429 | `rate_limited` | 频率限制（含 `retry_after` 秒数） |
+| 503 | `setup_token_not_configured` | 服务端未配置 SETUP_TOKEN，初始化被拒绝 |
 
 ---
 
@@ -321,11 +321,14 @@ s-qrypt/
 │   └── deploy.html             # 静态部署指南页
 ├── scripts/
 │   ├── setup.mjs               # 一键部署脚本 (D1 + Worker)
-│   └── obfuscate.mjs           # JS 控制流混淆
+│   ├── obfuscate.mjs           # JS 控制流混淆
+│   └── crypto-kat.mjs          # 密码学已知答案测试 (FIPS 180-4 KAT，npm test 自动执行)
 ├── migrations/
 │   └── 0001_init.sql           # D1 数据库初始模式 (参考)
 ├── test/
-│   └── index.spec.ts           # Vitest 集成测试
+│   ├── index.spec.ts           # Vitest 集成测试
+│   └── env.d.ts                # 测试环境类型
+├── vitest.config.ts            # Vitest 配置 (workers pool + SETUP_TOKEN)
 ├── .github/workflows/
 │   └── deploy.yml              # GitHub Actions 自动部署
 ├── wrangler.jsonc              # Cloudflare Workers 配置
