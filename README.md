@@ -51,6 +51,7 @@ S-Qrypt 是一个严格零信任、后量子安全的加密笔记保险箱，专
 | **安全审计面板** | 本地签名链日志 + 远程 RSA 加密日志下载与离线解密指引 |
 | **审计密钥管理** | 初始化后可随时配置/更换 RSA 公钥，更换时旧日志自动清除 |
 | **一键明文备份** | 解密所有笔记并导出 JSON 文件，实时进度显示，失败笔记自动跳过 |
+| **备份导入** | 读取备份 JSON 追加合并导入（保留原创建/修改时间），逐条重新加密，进度与失败统计 |
 | **键盘快捷键** | Esc 关闭面板、Ctrl+N 新建、Ctrl+F 搜索 |
 | **编辑器未保存提示** | 离开编辑器时检测未保存更改 |
 
@@ -266,7 +267,7 @@ operation_token: <hex_token>          # 所有 POST/PUT/PATCH/DELETE 请求体�
 | `GET` | `/api/notes?offset=0&limit=50&deleted=1` | X-Verification-Token | 笔记列表，`deleted=1` 查看回收站 |
 | `POST` | `/api/note` | operation_token | 创建空白笔记，返回 `{id}` |
 | `GET` | `/api/note/:id` | X-Verification-Token | 获取单条笔记（含加密元数据和正文） |
-| `PUT` | `/api/note/:id` | operation_token | 更新笔记。body ≤2MB，meta ≤10KB |
+| `PUT` | `/api/note/:id` | operation_token | 更新笔记。body ≤2MB，meta ≤10KB。可选 `created_at`/`updated_at`（≤64 字符字符串，备份导入保留原时间戳） |
 | `PATCH` | `/api/note/:id/soft-delete` | operation_token | 软删除（deleted=1） |
 | `PATCH` | `/api/note/:id/restore` | operation_token | 恢复软删除（deleted=0） |
 | `DELETE` | `/api/note/:id` | operation_token | 硬删除 |

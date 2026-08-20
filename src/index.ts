@@ -467,14 +467,19 @@ self.addEventListener('fetch',e=>e.respondWith(fetch(e.request).catch(()=>new Re
       if (!validateString(body.encrypted_meta_packet, 10000)) return errorResponse('invalid_meta', 400);
       if (!validateString(body.encrypted_body, 2097152)) return errorResponse('invalid_body', 400);
       if (body.is_test !== undefined && (typeof body.is_test !== 'number' || !Number.isInteger(body.is_test) || (body.is_test !== 0 && body.is_test !== 1))) return errorResponse('invalid_is_test', 400);
+      if (body.created_at !== undefined && !validateString(body.created_at, 64)) return errorResponse('invalid_created_at', 400);
+      if (body.updated_at !== undefined && !validateString(body.updated_at, 64)) return errorResponse('invalid_updated_at', 400);
       const ip = await getClientIp(request);
       const rl = await writeRateLimit(env.DB, 'write:' + ip);
       if (rl) return rl;
       const result = await env.DB.prepare(
-        "UPDATE notes SET encrypted_meta_packet = ?, encrypted_body = ?, updated_at = datetime('now')" +
+        "UPDATE notes SET encrypted_meta_packet = ?, encrypted_body = ?, updated_at = ?" +
+        (body.created_at !== undefined ? ", created_at = ?" : "") +
         (body.is_test !== undefined ? ", is_test = ?" : "") + " WHERE id = ?"
       ).bind(
         body.encrypted_meta_packet, body.encrypted_body,
+        body.updated_at !== undefined ? body.updated_at : "datetime('now')",
+        ...(body.created_at !== undefined ? [body.created_at] : []),
         ...(body.is_test !== undefined ? [body.is_test as number] : []),
         noteId
       ).run();

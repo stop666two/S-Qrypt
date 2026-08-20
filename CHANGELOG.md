@@ -13,6 +13,8 @@
 - `scripts/crypto-kat.mjs`：FIPS 180-4 已知答案测试（6 个 SHA-256/SHA-224 向量），通过 npm `pretest` 自动执行
 - `vitest.config.ts`：Vitest workers pool 配置，注入测试 SETUP_TOKEN
 - 测试覆盖：bootstrap 权限三态（无 token 拒绝 / 错误 token 拒绝 / 正确 token 放行）、未初始化读请求 fail-closed、错误 setup_token 403
+- 备份导入：读取备份 JSON 追加合并导入（不删除现有笔记），逐条以当前密钥重新派生并加密，保留原 created_at/updated_at，含 BOM 剥离、JSON 校验、进度与失败统计
+- PUT /api/note/:id 支持可选 `created_at`/`updated_at` 字段（服务端校验非空字符串 ≤64 字符，非法返回 400）
 
 ### Changed
 

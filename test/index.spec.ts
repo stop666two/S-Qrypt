@@ -182,6 +182,41 @@ describe('S-Qrypt v1.0.0 API', () => {
     expect(data.status).toBe('updated');
   });
 
+  it('updates note preserving provided created_at', async () => {
+    const { status } = await jsonFetch('/api/note/2', {
+      method: 'PUT',
+      body: JSON.stringify({
+        operation_token: TEST_TOKEN,
+        encrypted_meta_packet: 'bmV3X21ldGFf',
+        encrypted_body: 'bmV3X2JvZHlf',
+        created_at: '2020-01-02T03:04:05.000Z',
+        updated_at: '2020-01-03T04:05:06.000Z',
+      }),
+    });
+    expect(status).toBe(200);
+    const { status: s2, data } = await jsonFetch('/api/notes', {
+      headers: { 'X-Verification-Token': 'af3f8e6d9a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f' },
+    });
+    expect(s2).toBe(200);
+    const row = (data.notes || []).find((n: { id: number }) => n.id === 2);
+    expect(row && row.created_at).toBe('2020-01-02T03:04:05.000Z');
+    expect(row && row.updated_at).toBe('2020-01-03T04:05:06.000Z');
+  });
+
+  it('rejects invalid created_at', async () => {
+    const { status, data } = await jsonFetch('/api/note/2', {
+      method: 'PUT',
+      body: JSON.stringify({
+        operation_token: TEST_TOKEN,
+        encrypted_meta_packet: 'bmV3X21ldGFf',
+        encrypted_body: 'bmV3X2JvZHlf',
+        created_at: 12345,
+      }),
+    });
+    expect(status).toBe(400);
+    expect(data.error).toBe('invalid_created_at');
+  });
+
   it('gets single note', async () => {
     const { status, data } = await jsonFetch('/api/note/2', {
       headers: { 'X-Verification-Token': 'af3f8e6d9a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f' },
