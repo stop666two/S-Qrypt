@@ -80,13 +80,13 @@ S-Qrypt 是一个严格零信任、后量子安全的加密笔记保险箱，专
 
 ```
 ┌──────────────────────────┐       postMessage        ┌──────────────────────┐
-│   主页面 (Main SPA)      │ ◄──────────────────────► │ 沙箱 iframe          │
-│   - UI 渲染              │     {id, cmd, args}       │  sandbox="allow-sc-  │
-│   - API 调用             │     {id, result, error}   │  ripts"              │
-│   - 审计日志             │                           │  - 密钥派生 KA/KB/KC │
-│   - 密钥不可直接访问      │                           │  - AES-GCM 加解密    │
+│   主页面 (Main SPA)       │ ◄──────────────────────► │ 沙箱 iframe           │
+│   - UI 渲染               │     {id, cmd, args}      │  sandbox="allow-sc-  │
+│   - API 调用              │     {id, result, error}  │  ripts"              │
+│   - 审计日志              │                           │  - 密钥派生 KA/KB/KC  │
+│   - 密钥不可直接访问       │                           │  - AES-GCM 加解密     │
 │                          │                           │  - Argon2id (WASM)   │
-│                          │                           │  - 密钥仅在线性内存  │
+│                          │                           │  - 密钥仅在线性内存    │
 └──────────────────────────┘                           └──────────────────────┘
 ```
 
