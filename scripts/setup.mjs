@@ -16,6 +16,17 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const wranglerPath = resolve(__dirname, '../wrangler.jsonc');
 const DB_NAME = 's-qrypt-db';
 
+// Snapshot the committed value so a run restores what it found, not a fixed
+// placeholder (wrangler.jsonc ships with a real database_id).
+const originalDatabaseId = (() => {
+  try {
+    const m = readFileSync(wranglerPath, 'utf8').match(/"database_id":\s*"([^"]*)"/);
+    return m ? m[1] : undefined;
+  } catch {
+    return undefined;
+  }
+})();
+
 function run(cmd, opts = {}) {
   return execSync(cmd, { encoding: 'utf8', shell: true, ...opts });
 }
@@ -113,21 +124,36 @@ async function updateConfig(dbId) {
 
 async function deployWorker() {
   console.log('\n3. 部署 Worker...');
-  run('npx wrangler deploy', { stdio: 'inherit' });
-  console.log('\n   ✅ Worker 部署完成');
+  let deployError = null;
+  try {
+    run('node scripts/obfuscate.mjs', { stdio: 'inherit' });
+    run('npx wrangler deploy', { stdio: 'inherit' });
+  } catch (e) {
+    deployError = e;
+  } finally {
+    // Always restore: obfuscate.mjs rewrites src/homeHtml.ts in place.
+    try {
+      execSync('git checkout -- src/homeHtml.ts', { stdio: 'inherit', shell: true });
+    } catch (e) {
+      console.warn('   ⚠ 还原 src/homeHtml.ts 失败，请手工 git checkout');
+    }
+  }
+  if (deployError) throw deployError;
+  console.log('\n   ✅ Worker 部署完成（已含混淆）');
 }
 
 function restorePlaceholder() {
   try {
-    let config = readFileSync(wranglerPath, 'utf8');
-    const updated = replaceDatabaseId(config, '00000000-0000-0000-0000-000000000000');
-    if (updated === config) {
-      console.warn('   ⚠ database_id 已是占位符，无需恢复');
+    const current = readFileSync(wranglerPath, 'utf8');
+    if (originalDatabaseId === undefined) {
+      console.warn('   ⚠ 未读取到原始 database_id，跳过还原');
       return;
     }
+    const updated = replaceDatabaseId(current, originalDatabaseId);
+    if (updated === current) return;
     writeFileSync(wranglerPath, updated, 'utf8');
   } catch (e) {
-    console.warn('恢复占位符失败: ' + e.message);
+    console.warn('还原 database_id 失败: ' + e.message);
   }
 }
 
