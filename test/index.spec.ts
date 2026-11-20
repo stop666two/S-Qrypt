@@ -1,8 +1,20 @@
-import { describe, it, expect, beforeAll, afterAll } from 'vitest';
-import { SELF } from 'cloudflare:test';
+import { describe, it, expect, beforeAll } from 'vitest';
+import { SELF, env } from 'cloudflare:test';
 
 const TEST_TOKEN = 'abc123test';
 const TEST_TOKEN_HASH = '03223b3b6fbb56617a7015252b37d8050a9e85c8102e682f18457940b1d4e1bd';
+
+// isolatedStorage is off, so D1 state survives between runs. Every run must start
+// from an empty vault, otherwise "first init" style tests fail on the second run.
+beforeAll(async () => {
+  for (const table of ['notes', 'config', 'auth_limits', 'audit_logs']) {
+    try {
+      await env.DB.exec(`DELETE FROM ${table}`);
+    } catch {
+      // table does not exist yet (first run) — ensureSchema creates it on first request
+    }
+  }
+});
 
 async function jsonFetch(path: string, options?: RequestInit): Promise<{ status: number; data: any; headers: Headers }> {
   const res = await SELF.fetch(`http://localhost${path}`, {
@@ -21,7 +33,9 @@ describe('S-Qrypt v1.0.0 API', () => {
     expect(text).toContain('S-Qrypt');
     expect(text).toContain('deriveKA');
     expect(text).toContain('deriveKB');
-    expect(text).toContain('deriveKC');
+    // Argon2id must be loadable by the page itself; there is no sandbox iframe.
+    expect(text).toContain('src="/argon2.js"');
+    expect(text).not.toContain('/crypto-sandbox');
   });
 
   it('init-check returns not_initialized', async () => {
@@ -78,6 +92,31 @@ describe('S-Qrypt v1.0.0 API', () => {
     });
     expect(status).toBe(403);
     expect(data.error).toBe('invalid_setup_token');
+  });
+
+  it('rejects oversized and malformed init payloads (R-18)', async () => {
+    const oversizedSalt = await jsonFetch('/api/init', {
+      method: 'POST',
+      body: JSON.stringify({
+        verification_token: 'a'.repeat(64),
+        operation_token_hash: 'b'.repeat(64),
+        salt: 'a'.repeat(1024 * 1024),
+        setup_token: 'test-setup-token',
+      }),
+    });
+    expect(oversizedSalt.status).toBe(400);
+    expect(oversizedSalt.data.error).toBe('invalid_salt');
+
+    const malformedToken = await jsonFetch('/api/init', {
+      method: 'POST',
+      body: JSON.stringify({
+        verification_token: 'not-hex-token',
+        operation_token_hash: 'b'.repeat(64),
+        setup_token: 'test-setup-token',
+      }),
+    });
+    expect(malformedToken.status).toBe(400);
+    expect(malformedToken.data.error).toBe('invalid_verification_token');
   });
 
   it('init creates config', async () => {
@@ -277,5 +316,129 @@ describe('S-Qrypt v1.0.0 API', () => {
     expect(res.headers.get('Cross-Origin-Embedder-Policy')).toBe('require-corp');
     expect(res.headers.get('X-Content-Type-Options')).toBe('nosniff');
     expect(res.headers.get('Referrer-Policy')).toBe('no-referrer');
+  });
+
+  it('sets framing protection on HTML responses (R-09)', async () => {
+    for (const path of ['/', '/deploy']) {
+      const res = await SELF.fetch('http://localhost' + path);
+      expect(res.headers.get('X-Frame-Options')).toBe('DENY');
+      expect(res.headers.get('Content-Security-Policy')).toContain("frame-ancestors 'none'");
+    }
+  });
+
+  it('rejects a foreign Origin instead of letting any https site through (R-05)', async () => {
+    const evil = await jsonFetch('/api/note', {
+      method: 'POST',
+      headers: { Origin: 'https://evil.example' },
+      body: JSON.stringify({ operation_token: TEST_TOKEN }),
+    });
+    expect(evil.status).toBe(403);
+    expect(evil.data.error).toBe('forbidden_origin');
+
+    const sameOrigin = await jsonFetch('/api/note', {
+      method: 'POST',
+      headers: { Origin: 'http://localhost' },
+      body: JSON.stringify({ operation_token: TEST_TOKEN }),
+    });
+    expect(sameOrigin.status).toBe(201);
+  });
+
+  it('stores a real timestamp when updated_at is omitted (R-02)', async () => {
+    const created = await jsonFetch('/api/note', {
+      method: 'POST',
+      body: JSON.stringify({ operation_token: TEST_TOKEN }),
+    });
+    const id = created.data.id;
+    await jsonFetch('/api/note/' + id, {
+      method: 'PUT',
+      body: JSON.stringify({
+        operation_token: TEST_TOKEN,
+        encrypted_meta_packet: 'dGVzdF9tZXRh',
+        encrypted_body: 'dGVzdF9ib2R5',
+      }),
+    });
+    const list = await jsonFetch('/api/notes', {
+      headers: { 'X-Verification-Token': 'af3f8e6d9a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f' },
+    });
+    const row = list.data.notes.find((n: { id: number }) => n.id === id);
+    expect(row).toBeDefined();
+    expect(row.updated_at).not.toBe("datetime('now')");
+    expect(Number.isNaN(Date.parse(row.updated_at))).toBe(false);
+  });
+
+  it('hides test notes from single-note reads (R-21)', async () => {
+    const created = await jsonFetch('/api/note', {
+      method: 'POST',
+      body: JSON.stringify({ operation_token: TEST_TOKEN }),
+    });
+    const id = created.data.id;
+    await jsonFetch('/api/note/' + id, {
+      method: 'PUT',
+      body: JSON.stringify({
+        operation_token: TEST_TOKEN,
+        encrypted_meta_packet: 'dGVzdF9tZXRh',
+        encrypted_body: 'dGVzdF9ib2R5',
+        is_test: 1,
+      }),
+    });
+    const read = await jsonFetch('/api/note/' + id, {
+      headers: { 'X-Verification-Token': 'af3f8e6d9a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f' },
+    });
+    expect(read.status).toBe(404);
+  });
+
+  it('requires the operation token for audit writes (R-17)', async () => {
+    const noOpToken = await jsonFetch('/api/audit/log', {
+      method: 'POST',
+      headers: { 'X-Verification-Token': 'af3f8e6d9a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f' },
+      body: JSON.stringify({ encrypted_entry: 'AAAA', fingerprint_hash: 'b'.repeat(16) }),
+    });
+    expect(noOpToken.status).toBe(400);
+    expect(noOpToken.data.error).toBe('invalid_token');
+
+    const withOpToken = await jsonFetch('/api/audit/log', {
+      method: 'POST',
+      headers: { 'X-Verification-Token': 'af3f8e6d9a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f' },
+      body: JSON.stringify({
+        operation_token: TEST_TOKEN,
+        encrypted_entry: 'AAAA',
+        fingerprint_hash: 'b'.repeat(16),
+      }),
+    });
+    expect(withOpToken.status).toBe(201);
+  });
+
+  it('does not throttle a 20-note import at 40 writes (R-03)', { timeout: 60000 }, async () => {
+    const statuses: number[] = [];
+    for (let i = 0; i < 20; i++) {
+      const created = await jsonFetch('/api/note', {
+        method: 'POST',
+        body: JSON.stringify({ operation_token: TEST_TOKEN }),
+      });
+      statuses.push(created.status);
+      const put = await jsonFetch('/api/note/' + created.data.id, {
+        method: 'PUT',
+        body: JSON.stringify({
+          operation_token: TEST_TOKEN,
+          encrypted_meta_packet: 'dGVzdF9tZXRh',
+          encrypted_body: 'dGVzdF9ib2R5',
+        }),
+      });
+      statuses.push(put.status);
+    }
+    expect(statuses.filter((s) => s === 429)).toHaveLength(0);
+    expect(statuses.every((s) => s === 200 || s === 201)).toBe(true);
+  });
+
+  it('throttles repeated failed authentication (R-04)', { timeout: 60000 }, async () => {
+    const counts: Record<number, number> = {};
+    for (let i = 0; i < 120; i++) {
+      const { status } = await jsonFetch('/api/notes', {
+        headers: { 'X-Verification-Token': 'wrong' + i },
+      });
+      counts[status] = (counts[status] ?? 0) + 1;
+    }
+    expect(counts[401]).toBeGreaterThan(0);
+    expect(counts[429]).toBeGreaterThan(0);
   });
 });

@@ -10,7 +10,7 @@ import { dirname, resolve } from 'path';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const SRC_DIR = resolve(__dirname, '../src/') + '/';
-const FILES = ['homeHtml.ts', 'cryptoSandboxHtml.ts'];
+const FILES = ['homeHtml.ts'];
 
 function extractJS(content, file) {
   // Find the <script> ... </script> section

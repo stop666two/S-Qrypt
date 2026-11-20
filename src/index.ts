@@ -1,5 +1,4 @@
 import { homeHtml } from './homeHtml';
-import { cryptoSandboxHtml } from './cryptoSandboxHtml';
 import { deployHtml } from './deployHtml';
 import { argon2WasmBase64, argon2Js } from './argon2Files';
 
@@ -34,7 +33,8 @@ function htmlResponse(body: string): Response {
     status: 200,
     headers: {
       'Content-Type': 'text/html; charset=utf-8',
-      'Content-Security-Policy': "default-src 'self'; script-src 'self' 'unsafe-inline' https://static.cloudflareinsights.com; style-src 'self' 'unsafe-inline'; object-src 'none'; img-src 'self' data: blob: https://static.cloudflareinsights.com; connect-src 'self' https://static.cloudflareinsights.com;",
+      'Content-Security-Policy': "default-src 'self'; script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval' https://static.cloudflareinsights.com; style-src 'self' 'unsafe-inline'; object-src 'none'; img-src 'self' data: blob: https://static.cloudflareinsights.com; connect-src 'self' https://static.cloudflareinsights.com; frame-ancestors 'none';",
+      'X-Frame-Options': 'DENY',
       'Cross-Origin-Opener-Policy': 'same-origin',
       'Cross-Origin-Embedder-Policy': 'require-corp',
       'X-Content-Type-Options': 'nosniff',
@@ -61,7 +61,7 @@ async function hexSha256(input: string): Promise<string> {
 }
 
 async function ensureColumn(db: D1Database, table: string, column: string, ddl: string): Promise<void> {
-  const res = await db.prepare(PRIMARY_READ + 'SELECT name FROM pragma_table_info(?)').bind(table).all<{ name: string }>();
+  const res = await db.prepare('SELECT name FROM pragma_table_info(?)').bind(table).all<{ name: string }>();
   const exists = res.results?.some(r => r.name === column) ?? false;
   if (!exists) await db.exec(ddl);
 }
@@ -88,12 +88,14 @@ async function ensureSchema(db: D1Database): Promise<void> {
 }
 
 async function getClientIp(request: Request): Promise<string> {
-  return request.headers.get('CF-Connecting-IP') || request.headers.get('X-Forwarded-For') || 'unknown';
+  // Only the edge-provided header is trustworthy; X-Forwarded-For is client
+  // controlled and would let anyone mint fresh rate-limit buckets.
+  return request.headers.get('CF-Connecting-IP') || 'unknown';
 }
 
 async function verifyOperationToken(db: D1Database, token: string): Promise<boolean> {
   const config = await db.prepare(
-    PRIMARY_READ + 'SELECT operation_token_hash FROM config WHERE id = ?'
+    'SELECT operation_token_hash FROM config WHERE id = ?'
   ).bind('app_config').first<{ operation_token_hash: string }>();
   if (!config || !config.operation_token_hash) return false;
   const tokenHash = await hexSha256(token);
@@ -102,7 +104,7 @@ async function verifyOperationToken(db: D1Database, token: string): Promise<bool
 
 async function checkOperationToken(db: D1Database, token: string | undefined, bootstrapToken?: string, envSetupToken?: string): Promise<Response | null> {
   const config = await db.prepare(
-    PRIMARY_READ + 'SELECT init_completed, operation_token_hash FROM config WHERE id = ?'
+    'SELECT init_completed, operation_token_hash FROM config WHERE id = ?'
   ).bind('app_config').first<{ init_completed: number; operation_token_hash: string }>();
   if (!config || config.init_completed !== 1) {
     if (typeof bootstrapToken === 'string' && bootstrapToken.length <= 256 && envSetupToken && constantTimeEqual(bootstrapToken, envSetupToken)) return null;
@@ -116,40 +118,45 @@ async function checkOperationToken(db: D1Database, token: string | undefined, bo
 }
 
 async function requireVerificationToken(request: Request, db: D1Database): Promise<Response | null> {
-  const config = await db.prepare(
-    PRIMARY_READ + 'SELECT init_completed, verification_token, verification_token_hash FROM config WHERE id = ?'
-  ).bind('app_config').first<{ init_completed: number; verification_token: string; verification_token_hash: string }>();
-  if (!config || config.init_completed !== 1) return errorResponse('unauthorized', 401);
+  const ip = await getClientIp(request);
+  // Failed authentication is what gets throttled; a valid token costs nothing.
+  const deny = async (): Promise<Response> => {
+    const rl = await writeRateLimit(db, 'auth:' + ip, RATE_MAX_READ);
+    return rl ?? errorResponse('unauthorized', 401);
+  };
+  const config = await db.prepare('SELECT init_completed, verification_token, verification_token_hash FROM config WHERE id = ?')
+    .bind('app_config').first<{ init_completed: number; verification_token: string; verification_token_hash: string }>();
+  if (!config || config.init_completed !== 1) return deny();
   const token = request.headers.get('X-Verification-Token');
-  if (!token) return errorResponse('unauthorized', 401);
+  if (!token) return deny();
   if (config.verification_token_hash) {
     if (!constantTimeEqual(await hexSha256(token), config.verification_token_hash)) {
-      return errorResponse('unauthorized', 401);
+      return deny();
     }
   } else if (config.verification_token) {
     if (!constantTimeEqual(token, config.verification_token)) {
-      return errorResponse('unauthorized', 401);
+      return deny();
     }
     const vHash = await hexSha256(token);
     await db.prepare(
       "UPDATE config SET verification_token_hash = ?, verification_token = '' WHERE id = ?"
     ).bind(vHash, 'app_config').run();
   } else {
-    return errorResponse('unauthorized', 401);
+    return deny();
   }
   return null;
 }
 
-function csrfCheck(request: Request): Response | null {
+function csrfCheck(request: Request, url: URL): Response | null {
   const origin = request.headers.get('Origin');
   const referer = request.headers.get('Referer');
   if (!origin && !referer) return null;
+  // Anything that is not literally this deployment's own origin is rejected;
+  // "any https site" is not an allow-list.
   const allowed = (s: string) => {
     try {
       const u = new URL(s);
-      if (u.protocol === 'https:') return true;
-      if (u.protocol === 'http:' && (u.hostname === '127.0.0.1' || u.hostname === 'localhost')) return true;
-      return false;
+      return u.protocol === url.protocol && u.hostname === url.hostname;
     } catch {
       return false;
     }
@@ -177,20 +184,20 @@ const RATE_LOCK_MS = 600000;
 const RATE_MAX_WRITE = 40;
 const RATE_MAX_READ = 100;
 
-// D1 replicates reads to nearby replicas by default; a read that lands on a
-// replica can briefly miss the latest write (e.g. login succeeds against the
-// primary config row, then the note list query hits a stale replica and
-// returns empty). Prefixing reads with this hint forces the primary instance.
-const PRIMARY_READ = '/* d1_primary */ ';
+// D1 has no SQL-level primary hint: a comment in the query text is inert. If
+// read replication is ever enabled for this database, reads must go through the
+// Sessions API (env.DB.withSession('first-primary')) to avoid stale replicas.
 
 async function writeRateLimit(db: D1Database, key: string, max: number = RATE_MAX_WRITE): Promise<Response | null> {
   const now = Date.now();
-  let row = await db.prepare(PRIMARY_READ + 'SELECT * FROM auth_limits WHERE key = ?')
+  let row = await db.prepare('SELECT * FROM auth_limits WHERE key = ?')
     .bind(key).first<{ key: string; attempts: number; window_start: number; locked_until: number }>();
   if (row && row.locked_until > now) {
     return jsonResponse({ error: 'rate_limited', retry_after: Math.ceil((row.locked_until - now) / 1000) }, 429);
   }
   if (!row || (now - row.window_start) > RATE_WINDOW_MS) {
+    // Drop windows that can no longer matter so auth_limits stays bounded.
+    await db.prepare('DELETE FROM auth_limits WHERE window_start < ?').bind(now - RATE_LOCK_MS).run();
     await db.prepare('INSERT OR REPLACE INTO auth_limits (key, attempts, window_start, locked_until) VALUES (?, 1, ?, 0)').bind(key, now).run();
     return null;
   }
@@ -203,6 +210,12 @@ async function writeRateLimit(db: D1Database, key: string, max: number = RATE_MA
   return null;
 }
 
+// Successful, authenticated work must not consume the budget: the limiter
+// guards failed attempts (brute force), not legitimate traffic.
+async function clearRateLimit(db: D1Database, key: string): Promise<void> {
+  await db.prepare('DELETE FROM auth_limits WHERE key = ?').bind(key).run();
+}
+
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     const url = new URL(request.url);
@@ -211,7 +224,7 @@ export default {
 
     await ensureSchema(env.DB);
 
-    const csrfRes = csrfCheck(request);
+    const csrfRes = csrfCheck(request, url);
     if (csrfRes && path.startsWith('/api')) return csrfRes;
 
     // Serve SPA
@@ -231,16 +244,6 @@ export default {
         theme_color: '#6c6cff',
         icons: [{ src: '/app-icon.svg', sizes: '512x512', type: 'image/svg+xml', purpose: 'any maskable' }],
       }), { status: 200, headers: { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' } });
-    }
-
-    // PWA: Service Worker
-    if (path === '/sw.js') {
-      return new Response(
-        `self.addEventListener('install',()=>self.skipWaiting());
-self.addEventListener('activate',e=>e.waitUntil(clients.claim()));
-self.addEventListener('fetch',e=>e.respondWith(fetch(e.request).catch(()=>new Response('Offline',{status:503}))))`,
-        { status: 200, headers: { 'Content-Type': 'application/javascript', 'Cache-Control': 'no-store' } }
-      );
     }
 
     // PWA: App Icon
@@ -275,28 +278,14 @@ self.addEventListener('fetch',e=>e.respondWith(fetch(e.request).catch(()=>new Re
       });
     }
 
-    // Serve crypto sandbox iframe (isolated origin via sandbox attribute in parent)
-    if (path === '/crypto-sandbox') {
-      return new Response(cryptoSandboxHtml, {
-        status: 200,
-        headers: {
-          'Content-Type': 'text/html; charset=utf-8',
-          'Content-Security-Policy': "default-src 'self'; script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval'; img-src 'self' data:; connect-src 'self' https://static.cloudflareinsights.com;",
-          'Cross-Origin-Resource-Policy': 'cross-origin',
-          'Cross-Origin-Embedder-Policy': 'require-corp',
-          'X-Content-Type-Options': 'nosniff',
-          'Cache-Control': 'no-store',
-        },
-      });
-    }
-
     // Deploy guide page
     if (path === '/deploy') {
       return new Response(deployHtml, {
         status: 200,
         headers: {
           'Content-Type': 'text/html; charset=utf-8',
-          'Content-Security-Policy': "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:;",
+          'Content-Security-Policy': "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; frame-ancestors 'none';",
+          'X-Frame-Options': 'DENY',
           'Cross-Origin-Resource-Policy': 'cross-origin',
           'X-Content-Type-Options': 'nosniff',
           'Cache-Control': 'no-store',
@@ -309,7 +298,7 @@ self.addEventListener('fetch',e=>e.respondWith(fetch(e.request).catch(()=>new Re
       let dbBound = false;
       try {
         const config = await env.DB.prepare(
-          PRIMARY_READ + 'SELECT init_completed, kdf_version FROM config WHERE id = ?'
+          'SELECT init_completed, kdf_version FROM config WHERE id = ?'
         ).bind('app_config').first<{ init_completed: number; kdf_version: number }>();
         dbBound = true;
         return jsonResponse({
@@ -332,11 +321,10 @@ self.addEventListener('fetch',e=>e.respondWith(fetch(e.request).catch(()=>new Re
       const rl = await writeRateLimit(env.DB, 'token:' + ip, RATE_MAX_READ);
       if (rl) return rl;
       const config = await env.DB.prepare(
-        PRIMARY_READ + 'SELECT salt, audit_public_key FROM config WHERE id = ?'
-      ).bind('app_config').first<{ salt: string; audit_public_key: string }>();
+        'SELECT audit_public_key FROM config WHERE id = ?'
+      ).bind('app_config').first<{ audit_public_key: string }>();
       if (!config) return errorResponse('not_initialized', 404);
       return jsonResponse({
-        salt: config.salt || undefined,
         audit_public_key: config.audit_public_key || undefined,
       }, 200, { 'Cache-Control': 'no-store' });
     }
@@ -344,7 +332,7 @@ self.addEventListener('fetch',e=>e.respondWith(fetch(e.request).catch(()=>new Re
     // POST /api/init — initialize vault
     if (path === `${API_PREFIX}/init` && method === 'POST') {
       const existing = await env.DB.prepare(
-        PRIMARY_READ + 'SELECT init_completed FROM config WHERE id = ?'
+        'SELECT init_completed FROM config WHERE id = ?'
       ).bind('app_config').first<{ init_completed: number }>();
       if (existing && existing.init_completed === 1) {
         return errorResponse('already_initialized', 409);
@@ -372,6 +360,11 @@ self.addEventListener('fetch',e=>e.respondWith(fetch(e.request).catch(()=>new Re
       }
       if (!body.verification_token) return errorResponse('missing_verification_token');
       if (!body.operation_token_hash) return errorResponse('missing_operation_token_hash');
+      if (!validateString(body.verification_token, 128) || !/^[0-9a-f]+$/i.test(body.verification_token)) return errorResponse('invalid_verification_token', 400);
+      if (!validateString(body.operation_token_hash, 128) || !/^[0-9a-f]+$/i.test(body.operation_token_hash)) return errorResponse('invalid_operation_token_hash', 400);
+      if (body.salt !== undefined && !(typeof body.salt === 'string' && body.salt.length <= 128)) return errorResponse('invalid_salt', 400);
+      if (body.audit_public_key !== undefined && !(typeof body.audit_public_key === 'string' && body.audit_public_key.length <= 10000)) return errorResponse('invalid_key', 400);
+      if (body.kdf_version !== undefined && (body.kdf_version !== 1 && body.kdf_version !== 2)) return errorResponse('invalid_kdf_version', 400);
 
       const verificationTokenHash = await hexSha256(body.verification_token);
       await env.DB.prepare(
@@ -411,10 +404,10 @@ self.addEventListener('fetch',e=>e.respondWith(fetch(e.request).catch(()=>new Re
         ? "WHERE is_test != 1 AND deleted = 1"
         : "WHERE is_test != 1 AND deleted != 1";
       const totalRow = await env.DB.prepare(
-        PRIMARY_READ + `SELECT COUNT(*) as cnt FROM notes ${whereClause}`
+        `SELECT COUNT(*) as cnt FROM notes ${whereClause}`
       ).first<{ cnt: number }>();
       const rows = await env.DB.prepare(
-        PRIMARY_READ + `SELECT id, encrypted_meta_packet, is_test, deleted, created_at, updated_at FROM notes ${whereClause} ORDER BY id ASC LIMIT ? OFFSET ?`
+        `SELECT id, encrypted_meta_packet, is_test, deleted, created_at, updated_at FROM notes ${whereClause} ORDER BY id ASC LIMIT ? OFFSET ?`
       ).bind(limit, offset).all<{ id: number; encrypted_meta_packet: string; is_test: number; deleted: number }>();
       return jsonResponse({ notes: rows.results, total: totalRow?.cnt ?? 0, offset, limit });
     }
@@ -430,9 +423,18 @@ self.addEventListener('fetch',e=>e.respondWith(fetch(e.request).catch(()=>new Re
       const rl = await writeRateLimit(env.DB, 'write:' + ip);
       if (rl) return rl;
 
+      const cfg = await env.DB.prepare('SELECT init_completed FROM config WHERE id = ?')
+        .bind('app_config').first<{ init_completed: number }>();
+      if (!cfg || cfg.init_completed !== 1) {
+        // Bootstrap may create exactly one placeholder note, nothing else.
+        const existing = await env.DB.prepare('SELECT COUNT(*) as cnt FROM notes').first<{ cnt: number }>();
+        if ((existing?.cnt ?? 0) > 0) return errorResponse('placeholder_exists', 409);
+      }
+
       const result = await env.DB.prepare(
         `INSERT INTO notes (encrypted_meta_packet, encrypted_body) VALUES ('', '') RETURNING id`
       ).first<{ id: number }>();
+      await clearRateLimit(env.DB, 'write:' + ip);
       return jsonResponse({ id: result?.id ?? -1 }, 201);
     }
 
@@ -444,7 +446,7 @@ self.addEventListener('fetch',e=>e.respondWith(fetch(e.request).catch(()=>new Re
 
       const noteId = Number(noteMatch[1]);
       const row = await env.DB.prepare(
-        PRIMARY_READ + 'SELECT id, encrypted_meta_packet, encrypted_body, created_at, updated_at, deleted FROM notes WHERE id = ?'
+        'SELECT id, encrypted_meta_packet, encrypted_body, created_at, updated_at, deleted FROM notes WHERE id = ? AND is_test != 1'
       ).bind(noteId).first<{ id: number; encrypted_meta_packet: string; encrypted_body: string; deleted: number }>();
       if (!row || row.deleted === 1) return errorResponse('not_found', 404);
       return jsonResponse({
@@ -473,17 +475,18 @@ self.addEventListener('fetch',e=>e.respondWith(fetch(e.request).catch(()=>new Re
       const rl = await writeRateLimit(env.DB, 'write:' + ip);
       if (rl) return rl;
       const result = await env.DB.prepare(
-        "UPDATE notes SET encrypted_meta_packet = ?, encrypted_body = ?, updated_at = ?" +
+        "UPDATE notes SET encrypted_meta_packet = ?, encrypted_body = ?, updated_at = COALESCE(?, datetime('now'))" +
         (body.created_at !== undefined ? ", created_at = ?" : "") +
         (body.is_test !== undefined ? ", is_test = ?" : "") + " WHERE id = ?"
       ).bind(
         body.encrypted_meta_packet, body.encrypted_body,
-        body.updated_at !== undefined ? body.updated_at : "datetime('now')",
+        body.updated_at !== undefined ? body.updated_at : null,
         ...(body.created_at !== undefined ? [body.created_at] : []),
         ...(body.is_test !== undefined ? [body.is_test as number] : []),
         noteId
       ).run();
       if (result.meta.changes === 0) return errorResponse('not_found', 404);
+      await clearRateLimit(env.DB, 'write:' + ip);
       return jsonResponse({ status: 'updated' });
     }
 
@@ -503,6 +506,7 @@ self.addEventListener('fetch',e=>e.respondWith(fetch(e.request).catch(()=>new Re
         'DELETE FROM notes WHERE id = ?'
       ).bind(noteId).run();
       if (result.meta.changes === 0) return errorResponse('not_found', 404);
+      await clearRateLimit(env.DB, 'write:' + ip);
       return jsonResponse({ status: 'deleted' });
     }
 
@@ -522,6 +526,7 @@ self.addEventListener('fetch',e=>e.respondWith(fetch(e.request).catch(()=>new Re
         'UPDATE notes SET deleted = 0 WHERE id = ?'
       ).bind(noteId).run();
       if (result.meta.changes === 0) return errorResponse('not_found', 404);
+      await clearRateLimit(env.DB, 'write:' + ip);
       return jsonResponse({ status: 'restored' });
     }
 
@@ -542,6 +547,7 @@ self.addEventListener('fetch',e=>e.respondWith(fetch(e.request).catch(()=>new Re
         'UPDATE notes SET deleted = 1 WHERE id = ?'
       ).bind(noteId).run();
       if (result.meta.changes === 0) return errorResponse('not_found', 404);
+      await clearRateLimit(env.DB, 'write:' + ip);
       return jsonResponse({ status: 'soft_deleted' });
     }
 
@@ -551,6 +557,9 @@ self.addEventListener('fetch',e=>e.respondWith(fetch(e.request).catch(()=>new Re
       if (authErr) return authErr;
       const body = await parseJsonBody(request);
       if (!body) return errorResponse('invalid_json', 400);
+      if (!validateString(body.operation_token, 128)) return errorResponse('invalid_token', 400);
+      const opRes = await checkOperationToken(env.DB, body.operation_token);
+      if (opRes) return opRes;
       if (!validateString(body.encrypted_entry, 5000)) return errorResponse('invalid_entry', 400);
       if (!validateString(body.fingerprint_hash, 64)) return errorResponse('invalid_fingerprint', 400);
       const ip = await getClientIp(request);
@@ -559,6 +568,7 @@ self.addEventListener('fetch',e=>e.respondWith(fetch(e.request).catch(()=>new Re
       await env.DB.prepare(
         'INSERT INTO audit_logs (encrypted_entry, fingerprint_hash) VALUES (?, ?)'
       ).bind(body.encrypted_entry, body.fingerprint_hash).run();
+      await clearRateLimit(env.DB, 'audit:' + ip);
       return jsonResponse({ status: 'logged' }, 201);
     }
 
@@ -570,9 +580,9 @@ self.addEventListener('fetch',e=>e.respondWith(fetch(e.request).catch(()=>new Re
       const rawOffset = Number(url.searchParams.get('offset'));
       const limit = Number.isFinite(rawLimit) && rawLimit >= 1 ? Math.min(200, Math.floor(rawLimit)) : 50;
       const offset = Number.isFinite(rawOffset) && rawOffset > 0 ? Math.floor(rawOffset) : 0;
-      const totalRow = await env.DB.prepare(PRIMARY_READ + 'SELECT COUNT(*) as cnt FROM audit_logs').first<{ cnt: number }>();
+      const totalRow = await env.DB.prepare('SELECT COUNT(*) as cnt FROM audit_logs').first<{ cnt: number }>();
       const rows = await env.DB.prepare(
-        PRIMARY_READ + 'SELECT id, encrypted_entry, created_at FROM audit_logs ORDER BY id DESC LIMIT ? OFFSET ?'
+        'SELECT id, encrypted_entry, created_at FROM audit_logs ORDER BY id DESC LIMIT ? OFFSET ?'
       ).bind(limit, offset).all();
       return jsonResponse({ entries: rows.results, total: totalRow?.cnt ?? 0 });
     }
