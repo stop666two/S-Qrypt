@@ -23,6 +23,12 @@ jobs:
           cache: npm
       - run: npm ci
 
+      - name: Typecheck
+        run: npx tsc --noEmit
+
+      - name: Unit tests
+        run: npx vitest run
+
       - name: Deploy (auto-create D1 + Worker)
         if: ${{ secrets.CLOUDFLARE_API_TOKEN != '' }}
         run: node scripts/setup.mjs
