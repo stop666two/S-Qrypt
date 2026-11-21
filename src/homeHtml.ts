@@ -9,7 +9,7 @@ export const homeHtml = `<!DOCTYPE html>
 <meta name="mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-<title>S-Qrypt v1.0.0 — 后量子安全加密笔记</title>
+<title>S-Qrypt v1.5.0 — 后量子安全加密笔记</title>
 <style>
 *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
 
