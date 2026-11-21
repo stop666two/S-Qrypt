@@ -18,6 +18,8 @@
 - HTML 响应补 `frame-ancestors 'none'`、`X-Frame-Options: DENY`、`base-uri 'none'`、`form-action 'none'`
 - 删除只承担一次 argon2id 的 iframe 沙箱层，Argon2 由主页面同源加载，派生只有一条路径；`script-src` 因此不再需要 `'unsafe-inline'`
 - 移除 `/argon2.wasm` 上已无用的 `Access-Control-Allow-Origin: *`；删除服务端明文 `verification_token` 比较分支
+- 主密钥派生的成本参数（`kdf_mb`/`kdf_ro`）改为**服务端绑定并随 `/api/token` 下发**。此前按 `navigator.hardwareConcurrency`/`deviceMemory` 估算，参数进了密钥配方，换设备即派生出不同 MK：正确密码被判「密码错误」、保险箱在新设备上永久打不开
+- 连续失败不再切换 Argon2 参数（那会让正确密码永远失败），改为固定延迟；早期无绑定参数的保险箱登录时依次尝试 `硬件估算 → 32/128 → 24/80 → 16/60`，命中后审计日志记录 `kdf_params_recovered`
 
 - 修复验证令牌明文存储（改为 SHA-256 哈希）与 GET /api/token 凭证泄露
 - 修复初始化接口无认证抢注（SETUP_TOKEN + 限流双重防护）
@@ -49,6 +51,11 @@
 - **界面（2026-11-21）**：按 §16 前端规则重做——去 1px 描边改明度分层、暗色字重统一降 40、焦点改双环、按钮热区 ≥44×44、内联样式清零、刻度字重 token 化；空态区分「首次为空 / 筛选无结果」；加载态改骨架屏；删除常驻假徽标
 - **文档（2026-11-21）**：README 六处与实现不符的宣称（沙箱隔离、自动降级、读限流、三异构密钥、PWA/Service Worker、审计签名）改为实况；新增 `docs/review/2026-11-21-full-review.md`（28 条发现 + 修复状态 + 未验证缺口）
 - **破坏性（2026-11-21）**：读令牌格式与 KDF 版本变化，已有保险箱需重置一次验证配置（见文末「升级注意」）；`POST /api/audit/log` 改为要求 operation_token；单条读接口过滤 `is_test`
+- 列表对解不开的笔记显示 `[无法解密]`（原「数据损坏」）；顶部新增常驻横幅「有 N 条笔记用当前密码解不开」，给出两条出路与可复制的重置命令，全部解密后自动消失
+- 客户端请求加 12s 超时：GET 自动重试一次，`finally` 释放 `pendingOps`，超时不再阻塞自动锁
+- 服务端返回 0 条但本地有内容时保留原视图并静默重试，不再显示「保险箱是空的」
+- 数据库读取失败返回 503 `db_unavailable`；`/api/init` 在「有笔记但无配置」时返回 409 `orphan_notes`（需 `force: true` 才允许覆盖）
+- 文档：新增 `docs/MIGRATION.md`（旧版 → 当前的三条迁移路径、密码不一致的显式报错、换设备问题、故障对照表、回滚边界与检查清单），README 升级说明与 docs 索引同步
 
 ### Removed
 
