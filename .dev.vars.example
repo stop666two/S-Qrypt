@@ -5,7 +5,8 @@
 # SETUP_TOKEN —— 初始化保险箱的一次性口令（POST /api/init 与引导阶段的 POST /api/note 都要它）。
 # 类型：字符串（≤256 字符）。
 # 可填：任意随机串，建议 24 位以上随机十六进制或密码学随机串。
-# 推荐：本地开发随便填（如 test-dev-token-123）；预演/生产用 `openssl rand -hex 24` 生成。
+# 推荐：本地开发随便填一个占位串（如 change-me-local-only）；预演/生产用 `openssl rand -hex 24` 生成，
+#       不要把某个环境正在用的真实值写进本文件或文档。
 # 注意：`dev-temp.bat` 启动的临时实例不使用本值，每次运行会随机生成一个并通过 --var 覆盖。
 # 不可填：空字符串（等价未配置，初始化会返回 503 setup_token_not_configured）、
 #         真实生产口令（本地文件不应承载生产密钥，见 §3.5.9）、
