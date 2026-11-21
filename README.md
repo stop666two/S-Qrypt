@@ -343,9 +343,9 @@ operation_token: <hex_token>          # 所有 POST/PUT/PATCH/DELETE 请求体�
 | 方法 | 路径 | 认证 | 说明 |
 |------|------|------|------|
 | `GET` | `/api/init-check` | 无 | 返回 `{initialized, db_bound, kdf_version}` |
-| `GET` | `/api/token` | 频率限制 | 返回 `{salt?, audit_public_key?, token_issued_at?}`。salt 是公开的 KDF 输入（16 字节 hex），不含它就无法按 v3 派生；响应带 `Cache-Control: no-store`。频率：100 次/5 分钟 |
-| `POST` | `/api/init` | setup_token | 初始化保险箱。请求体: `{setup_token, verification_token, operation_token_hash, kdf_version?, salt?, audit_public_key?}`。`kdf_version=3` 时 `salt` 必须是 32 位十六进制（否则 400 `invalid_salt`）；其余字段须为 ≤128 位十六进制，`audit_public_key` ≤10000 字符。setup_token 必须与环境变量 `SETUP_TOKEN` 一致（未配置时返回 503） |
-| `POST` | `/api/vault/upgrade` | operation_token | 把旧保险箱升级到 v3。`mode=begin` 先落 salt（`{mode, operation_token, salt}`），`mode=finish` 再用新令牌与哈希翻转版本（`{mode, operation_token, verification_token, operation_token_hash}`） |
+| `GET` | `/api/token` | 频率限制 | 返回 `{salt?, audit_public_key?, token_issued_at?, kdf_mb?, kdf_ro?}`。salt 与成本参数都是公开的 KDF 输入（不含它们就无法按 v3 派生，但知道它们也跳不过 KDF）；`kdf_mb/kdf_ro` 是**保险箱绑定的派生成本**，保证换设备派生出同一把钥匙。响应带 `Cache-Control: no-store`。频率：100 次/5 分钟 |
+| `POST` | `/api/init` | setup_token | 初始化保险箱。请求体: `{setup_token, verification_token, operation_token_hash, kdf_version?, salt?, audit_public_key?, kdf_mb?, kdf_ro?}`。`kdf_version=3` 时 `salt` 必须是 32 位十六进制（否则 400 `invalid_salt`）；其余字段须为 ≤128 位十六进制，`audit_public_key` ≤10000 字符。`kdf_mb/kdf_ro` 必须成对出现且在 8–512 MB / 16–8192 轮内（否则 400 `invalid_kdf_params`），它们决定主密钥，服务端存储后由 `/api/token` 下发。有笔记但无配置时返回 409 `orphan_notes`（需 `force: true` 才允许覆盖）。setup_token 必须与环境变量 `SETUP_TOKEN` 一致（未配置时返回 503） |
+| `POST` | `/api/vault/upgrade` | operation_token | 把旧保险箱升级到 v3。`mode=begin` 先落 salt（`{mode, operation_token, salt}`），`mode=finish` 再用新令牌与哈希翻转版本（`{mode, operation_token, verification_token, operation_token_hash, kdf_mb?, kdf_ro?}`，参数同样必须成对且越界返回 400 `invalid_kdf_params`） |
 | `POST` | `/api/vault/rotate` | operation_token | 续期读令牌（重置 `token_issued_at`），返回新的 `token_issued_at` |
 
 ### 笔记操作
@@ -385,13 +385,13 @@ operation_token: <hex_token>          # 所有 POST/PUT/PATCH/DELETE 请求体�
 
 | 状态码 | error 字段 | 说明 |
 |--------|-----------|------|
-| 400 | `invalid_json`, `invalid_token`, `invalid_body`, `invalid_id`, `invalid_meta`, `invalid_is_test`, `invalid_key`, `invalid_entry`, `invalid_fingerprint`, `invalid_salt`, `invalid_verification_token`, `invalid_operation_token_hash`, `invalid_kdf_version`, `invalid_created_at`, `invalid_updated_at`, `missing_verification_token`, `missing_operation_token_hash` | 请求格式或字段校验失败 |
+| 400 | `invalid_json`, `invalid_token`, `invalid_body`, `invalid_id`, `invalid_meta`, `invalid_is_test`, `invalid_key`, `invalid_entry`, `invalid_fingerprint`, `invalid_salt`, `invalid_verification_token`, `invalid_operation_token_hash`, `invalid_kdf_version`, `invalid_created_at`, `invalid_updated_at`, `invalid_kdf_params`, `missing_verification_token`, `missing_operation_token_hash` | 请求格式或字段校验失败（`invalid_kdf_params`：`kdf_mb/kdf_ro` 未成对或越界） |
 | 401 | `unauthorized`, `token_expired` | 令牌无效/保险箱未初始化；或读令牌超过 90 天有效期（用 `/api/vault/rotate` 续期） |
 | 403 | `forbidden`, `forbidden_origin`, `forbidden_referer`, `invalid_setup_token`, `missing_operation_token` | operation_token 无效 / 源校验拦截 / setup_token 错误或缺失 |
 | 404 | `not_found`, `not_initialized` | 资源不存在或未初始化 |
-| 409 | `already_initialized`, `placeholder_exists`, `already_upgraded`, `salt_not_staged` | 已初始化 / 引导阶段已有占位笔记 / 已是 v3 / 未先落 salt 就 finish |
+| 409 | `already_initialized`, `placeholder_exists`, `already_upgraded`, `salt_not_staged`, `orphan_notes` | 已初始化 / 引导阶段已有占位笔记 / 已是 v3 / 未先落 salt 就 finish / 有笔记但无配置（疑似误把库读空，需 `force`） |
 | 429 | `rate_limited` | 频率限制（含 `retry_after` 秒数） |
-| 503 | `setup_token_not_configured` | 服务端未配置 SETUP_TOKEN，初始化被拒绝 |
+| 503 | `setup_token_not_configured`, `db_unavailable` | 服务端未配置 SETUP_TOKEN，初始化被拒绝 / D1 读取失败（客户端会阻止把「读不到」当「空库」） |
 
 ---
 
