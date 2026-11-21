@@ -263,7 +263,7 @@ button{cursor:pointer;background:none;border:none}
 .audit-header button{min-width:44px;min-height:44px;display:grid;place-items:center;font-size:17px;
   color:var(--text2);border-radius:var(--r-sm);transition:color .16s var(--ease),background .16s var(--ease)}
 .audit-header button:hover{color:var(--text);background:var(--surface2)}
-.audit-toolbar{display:flex;align-items:center;gap:10px;flex-wrap:wrap;padding:0 20px 14px}
+.audit-toolbar{display:flex;align-items:center;gap:10px;flex-wrap:wrap;min-width:0;padding:0 20px 14px}
 .btn-audit-tab{min-height:34px;padding:6px 14px;font-size:12.5px;font-weight:var(--w-med);color:var(--text2);
   background:var(--surface2);border-radius:var(--r-xs);
   transition:color .16s var(--ease),background .16s var(--ease)}
@@ -294,17 +294,15 @@ button{cursor:pointer;background:none;border:none}
   box-shadow:0 0 0 1px var(--ring-inner),0 0 0 4px var(--ring-outer)}
 .muted-xs{font-size:11.5px;color:var(--text3)}
 .muted-sm{font-size:12px;color:var(--text2)}
-.hint-code{display:inline-block;padding:7px 9px;margin:5px 0;background:var(--surface2);
-  border-radius:var(--r-xs);font-family:var(--font-mono);font-size:11.5px;line-height:1.7;color:var(--text2)}
 .kbd{display:inline-block;min-width:1.6em;padding:1px 5px;background:var(--surface2);
   border-radius:5px;font-family:var(--font-mono);font-size:11.5px;color:var(--text2);text-align:center}
 .is-hidden{display:none}
 
-.audit-hint{flex:1 1 240px;font-size:11.5px;color:var(--text3);line-height:1.75}
+.audit-hint{flex:1 1 240px;min-width:0;font-size:11.5px;color:var(--text3);line-height:1.75}
 .audit-hint-title{display:block;font-size:12px;font-weight:var(--w-semi);color:var(--text2);margin-bottom:3px}
 .audit-hint-note{display:block;margin-top:7px}
 .hint-inline{font-family:var(--font-mono);font-size:11.5px;color:var(--text2)}
-.hint-code{display:block;white-space:pre;overflow-x:auto;margin:7px 0;padding:10px 12px;background:var(--surface2);
+.hint-code{display:block;max-width:100%;white-space:pre;overflow-x:auto;margin:7px 0;padding:10px 12px;background:var(--surface2);
   border-radius:var(--r-xs);font-family:var(--font-mono);font-size:11.5px;line-height:1.8;color:var(--text2)}
 .audit-form{display:flex;flex-direction:column;padding:2px 20px 16px;overflow-y:auto;flex:1}
 .warn-line{font-size:12px;color:var(--warning);margin-bottom:10px;line-height:1.6}
@@ -331,6 +329,7 @@ button{cursor:pointer;background:none;border:none}
   .note-item .note-actions button{min-height:44px;padding:10px 14px}
   .editor-header button,.audit-header button{min-width:44px;min-height:44px}
   .audit-body{max-height:50vh}
+  .hint-code{white-space:pre-wrap;overflow-wrap:normal}
   .confirm-actions{flex-direction:column-reverse}
   .confirm-actions .btn{width:100%;min-height:46px}
 }
