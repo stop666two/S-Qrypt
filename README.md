@@ -3,6 +3,7 @@
 **后量子安全加密笔记 · Zero-Trust Encrypted Notes on Cloudflare Workers**
 
 [![Deploy to Cloudflare Workers](https://img.shields.io/badge/Deploy%20to-Cloudflare%20Workers-f38020?logo=cloudflare&logoColor=white&style=for-the-badge)](https://github.com/stop666two/S-Qrypt/blob/main/public/deploy.html)
+[![CI](https://github.com/stop666two/S-Qrypt/actions/workflows/deploy.yml/badge.svg?branch=main)](https://github.com/stop666two/S-Qrypt/actions/workflows/deploy.yml)
 
 **当前版本：v1.5.0**（`package.json` / 页面标题 / CHANGELOG 同步）
 
