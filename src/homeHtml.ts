@@ -224,13 +224,18 @@ button{cursor:pointer;background:none;border:none}
 .status-toast.success{color:#cfe3da}
 
 /* ---------- dialogs & panels ---------- */
-#confirm-dialog,#trash-panel,#audit-panel,#audit-key-overlay{
-  /* 必须高于 .screen(1000)：否则初始化/解锁整屏会把对话框按钮盖住，点不动 */
+#trash-panel,#audit-panel,#audit-key-overlay{
+  /* 必须高于 .screen(1000)：否则初始化/解锁整屏会把面板按钮盖住，点不动 */
   position:fixed;inset:0;z-index:1500;display:none;align-items:center;justify-content:center;padding:20px;
   background:rgba(6,6,6,.62);backdrop-filter:blur(8px);
 }
 #confirm-dialog.active,#trash-panel.active,#audit-panel.active{display:flex}
 #audit-key-overlay{display:none}
+#confirm-dialog{
+  /* 高于面板(1500)与整屏(1000)：从回收站/审计面板里弹出的确认框必须可点 */
+  position:fixed;inset:0;z-index:1600;display:none;align-items:center;justify-content:center;padding:20px;
+}
+#confirm-dialog.active{display:flex}
 .confirm-box{width:min(408px,100%);padding:24px;background:var(--surface);
   border-radius:var(--r-lg);box-shadow:var(--shadow)}
 .confirm-box p{margin-bottom:6px;font-size:14px;line-height:1.6;text-wrap:pretty}
