@@ -16,6 +16,7 @@ S-Qrypt 是一个严格零信任、后量子安全的加密笔记保险箱，专
 - [安全架构](#安全架构)
 - [快速部署](#快速部署)
 - [本地开发](#本地开发)
+- [临时启动（一键试用）](#临时启动一键试用)
 - [API 文档](#api-文档)
 - [项目结构](#项目结构)
 - [技术栈](#技术栈)
@@ -178,7 +179,35 @@ npm test           # 监听模式跑单测；CI 用 npx vitest run
 npm run deploy       # 生产部署（check-clean + tsc + 混淆 + deploy，失败也会还原源码）
 npm run deploy:quick # dev-only：跳过混淆与测试，仅本地快速验证，勿用于生产
 npm run setup        # 一键 D1 创建 + 部署（结束后把 database_id 还原为运行前的值）
+npm run check:docs   # 校验 README 里的脚本名/接口/文件/错误码/锚点与代码一致
 ```
+
+`npm run dev`（等价 `npx wrangler dev`）使用仓库里 `.wrangler/` 的**持久**本地数据，适合连续开发；
+只想试一把、不想留下任何数据时用下面的临时启动。
+
+## 临时启动（一键试用）
+
+双击 `dev-temp.bat`，或在终端执行：
+
+```bat
+dev-temp.bat                      :: 默认 8787，自动挑空闲端口
+dev-temp.bat --port 8790          :: 指定起始端口
+dev-temp.bat --keep               :: 结束后保留临时数据
+dev-temp.bat --no-open            :: 不自动打开浏览器
+```
+
+它做的事：
+
+| 步骤 | 行为 |
+|---|---|
+| 前置检查 | 没有 Node.js 会直接报错退出（`dev-temp.bat` 只做这一步的包围，逻辑全在 `scripts/dev-temp.mjs`） |
+| 取初始化口令 | 读 `.dev.vars` 的 `SETUP_TOKEN`；没有就随机生成一个并打印出来 |
+| 数据隔离 | 状态写进 `.wrangler/temp-<时间戳>/`，**不碰**已存在的本地库；启动时顺手清理超过 1 小时的残留目录 |
+| 端口 | 从 8787 起探测到第一个空闲端口，被占也不会失败 |
+| 就绪检测 | 轮询 `/api/init-check` 直到 200（上限 120 秒），然后打开浏览器 |
+| 退出 | `Ctrl+C` 或 wrangler 退出即删除临时数据；窗口被强制关闭时，下次启动会清扫 |
+
+首次打开是空保险箱：用页面上提示的 `SETUP_TOKEN` 完成初始化即可。
 
 **注意事项：** 主页面外壳在 `src/homeHtml.ts`，SPA 脚本在 `src/app.client.txt`（部署时混淆、以 `/app.js` 供出），Argon2 WASM 由 `<script src="/argon2.js">` 同源加载。修改后需重启 `npm run dev`。
 
@@ -364,7 +393,11 @@ s-qrypt/
 │   ├── deploy.mjs              # 部署流水线 (混淆 → deploy → 必定还原源码)
 │   ├── check-clean.mjs         # 部署前确认 src/app.client.txt 无未提交改动
 │   ├── obfuscate.mjs           # JS 控制流混淆
+│   ├── dev-temp.mjs            # 临时实例启动逻辑 (被 dev-temp.bat 调用)
 │   └── crypto-kat.mjs          # 密码学已知答案测试 (FIPS 180-4 KAT，npm test 自动执行)
+├── docs/
+│   ├── README.md               # 文档索引
+│   └── review/                 # 审查报告（含修复状态与未验证项）
 ├── migrations/
 │   └── 0001_init.sql           # D1 数据库初始模式 (与 ensureSchema 一致)
 ├── test/
@@ -373,9 +406,13 @@ s-qrypt/
 ├── vitest.config.ts            # Vitest 配置 (workers pool + SETUP_TOKEN)
 ├── .github/workflows/
 │   └── deploy.yml              # GitHub Actions（npm ci → tsc → vitest → 部署）
+├── dev-temp.bat                # 一键临时启动（薄壳，逻辑在 scripts/dev-temp.mjs）
 ├── wrangler.jsonc              # Cloudflare Workers 配置
 ├── worker-configuration.d.ts   # Worker 类型声明
 ├── tsconfig.json
+├── .gitattributes              # 强制 *.bat 为 CRLF
+├── .dev.vars.example           # 本地环境变量模板（逐字段注释）
+├── CHANGELOG.md                # 变更日志与升级注意
 └── package.json
 ```
 

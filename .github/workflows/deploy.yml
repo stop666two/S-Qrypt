@@ -23,6 +23,9 @@ jobs:
           cache: npm
       - run: npm ci
 
+      - name: Docs consistency
+        run: npm run check:docs
+
       - name: Typecheck
         run: npx tsc --noEmit
 

@@ -10,6 +10,7 @@
     "start": "wrangler dev",
     "setup": "node scripts/setup.mjs",
     "test": "vitest",
+    "check:docs": "node scripts/check-docs.mjs",
     "cf-typegen": "wrangler types",
     "pretest": "node scripts/crypto-kat.mjs"
   },
