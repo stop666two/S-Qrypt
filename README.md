@@ -38,7 +38,7 @@ S-Qrypt 是一个严格零信任、后量子安全的加密笔记保险箱，专
 | **操作授权令牌** | 所有写操作需携带 HKDF 派生的一次性令牌，防越权操作 |
 | **频率限制** | 写操作连续失败 40 次/5 分钟、认证失败 100 次/5 分钟，超限锁定 10 分钟；成功请求不计入 |
 | **抗侧信道** | 恒定时间比较 + 随机延迟填充 + CSP/COOP/COEP + img-src + CORP + frame-ancestors 头 |
-| **主密钥派生验证令牌** | verification_token = HKDF(MK)；MK 的派生包含 per-vault 随机盐，离线校验既要做完整 KDF，也无法跨部署复用预计算表 |
+| **主密钥派生验证令牌** | verification_token = HKDF(MK)；MK 的派生包含 per-vault 随机盐与**服务端绑定的成本参数**（`kdf_mb/kdf_ro`），离线校验既要做完整 KDF，也无法跨部署复用预计算表；换设备仍派生出同一把钥匙 |
 
 ### 功能特性
 | 特性 | 说明 |
@@ -416,6 +416,7 @@ s-qrypt/
 │   └── crypto-kat.mjs          # 密码学已知答案测试 (FIPS 180-4 KAT，npm test 自动执行)
 ├── docs/
 │   ├── README.md               # 文档索引
+│   ├── MIGRATION.md            # 旧版 → 当前的迁移手册（升级/重置/换设备/故障对照）
 │   └── review/                 # 审查报告（含修复状态与未验证项）
 ├── migrations/
 │   └── 0001_init.sql           # D1 数据库初始模式 (与 ensureSchema 一致)
