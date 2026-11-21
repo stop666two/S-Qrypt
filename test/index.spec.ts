@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll } from 'vitest';
+import { describe, it, expect, beforeAll, vi } from 'vitest';
 import { SELF, env } from 'cloudflare:test';
 
 const TEST_TOKEN = 'abc123test';
@@ -559,5 +559,100 @@ describe('S-Qrypt v1.0.0 API', () => {
       body: JSON.stringify({ mode: 'begin', operation_token: TEST_TOKEN, salt }),
     });
     expect(staleOpToken.status).toBe(403);
+  });
+
+  it('fails closed when the config read throws during init (F1)', async () => {
+    const spy = vi.spyOn(env.DB, 'prepare').mockImplementation(() => {
+      throw new Error('d1 down');
+    });
+    try {
+      const res = await jsonFetch('/api/init', {
+        method: 'POST',
+        body: JSON.stringify({
+          verification_token: 'c'.repeat(64),
+          operation_token_hash: 'd'.repeat(64),
+          kdf_version: 3,
+          salt: 'a'.repeat(32),
+          setup_token: 'test-setup-token',
+        }),
+      });
+      expect(res.status).toBe(503);
+      expect(res.data.error).toBe('db_unavailable');
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it('refuses to overwrite a vault that still has notes (F2)', async () => {
+    await env.DB.exec('DELETE FROM config');
+
+    const blocked = await jsonFetch('/api/init', {
+      method: 'POST',
+      body: JSON.stringify({
+        verification_token: 'c'.repeat(64),
+        operation_token_hash: 'd'.repeat(64),
+        kdf_version: 3,
+        salt: 'a'.repeat(32),
+        setup_token: 'test-setup-token',
+      }),
+    });
+    expect(blocked.status).toBe(409);
+    expect(blocked.data.error).toBe('orphan_notes');
+    // 被拒后 config 仍未写入：数据没有被新盐覆盖
+    expect((await jsonFetch('/api/init-check')).data.initialized).toBe(false);
+
+    const forced = await jsonFetch('/api/init', {
+      method: 'POST',
+      body: JSON.stringify({
+        verification_token: 'e'.repeat(64),
+        operation_token_hash: 'f'.repeat(64),
+        kdf_version: 3,
+        salt: 'b'.repeat(32),
+        setup_token: 'test-setup-token',
+        force: true,
+      }),
+    });
+    expect(forced.status).toBe(201);
+  });
+});
+
+describe('vault-bound KDF parameters', () => {
+  const baseInit = {
+    verification_token: 'a'.repeat(64),
+    operation_token_hash: 'b'.repeat(64),
+    kdf_version: 3,
+    salt: 'c'.repeat(32),
+    setup_token: 'test-setup-token',
+  };
+
+  it('rejects a half-specified or out-of-range recipe', async () => {
+    await env.DB.exec('DELETE FROM config');
+    const half = await jsonFetch('/api/init', {
+      method: 'POST',
+      body: JSON.stringify({ ...baseInit, kdf_mb: 32 }),
+    });
+    expect(half.status).toBe(400);
+    expect(half.data.error).toBe('invalid_kdf_params');
+
+    const huge = await jsonFetch('/api/init', {
+      method: 'POST',
+      body: JSON.stringify({ ...baseInit, kdf_mb: 4096, kdf_ro: 128 }),
+    });
+    expect(huge.status).toBe(400);
+    expect(huge.data.error).toBe('invalid_kdf_params');
+  });
+
+  it('stores the recipe and hands it back from /api/token', async () => {
+    await env.DB.exec('DELETE FROM notes');
+    const init = await jsonFetch('/api/init', {
+      method: 'POST',
+      body: JSON.stringify({ ...baseInit, kdf_mb: 24, kdf_ro: 80 }),
+    });
+    expect(init.status).toBe(201);
+
+    const tok = await jsonFetch('/api/token');
+    expect(tok.status).toBe(200);
+    expect(tok.data.kdf_mb).toBe(24);
+    expect(tok.data.kdf_ro).toBe(80);
   });
 });

@@ -307,6 +307,10 @@ button{cursor:pointer;background:none;border:none}
 .audit-form{display:flex;flex-direction:column;padding:2px 20px 16px;overflow-y:auto;flex:1}
 .warn-line{font-size:12px;color:var(--warning);margin-bottom:10px;line-height:1.6}
 .audit-msg{flex:1;text-align:right}
+#key-mismatch{width:100%;max-width:var(--col);margin:14px auto 0;padding:14px 18px;background:var(--surface2);border-radius:var(--r-md)}
+#key-mismatch .km-title{font-size:14px;font-weight:var(--w-semi);color:var(--warning);margin-bottom:6px;text-wrap:pretty}
+#key-mismatch .km-body{font-size:13px;color:var(--text2);line-height:1.65;margin-bottom:10px;max-width:62ch;text-wrap:pretty}
+#key-mismatch .km-cmd{display:block;padding:10px 12px;background:var(--bg);border-radius:var(--r-xs);font-family:var(--font-mono);font-size:11.5px;line-height:1.7;color:var(--text2);white-space:pre-wrap;overflow-wrap:anywhere}
 .audit-chain{font-size:11.5px;color:var(--text2);padding:2px 0 10px;line-height:1.6}
 .danger-xs{font-size:11.5px;color:var(--danger)}
 .ok-xs{font-size:11.5px;color:var(--success)}
@@ -383,6 +387,11 @@ button{cursor:pointer;background:none;border:none}
 <button id="btn-audit">日志</button>
 <button id="btn-lock">锁定</button>
 </div>
+</div>
+<div id="key-mismatch" class="is-hidden">
+<div class="km-title">有笔记用当前密码解不开</div>
+<p class="km-body">若你是从旧版本迁移：这次初始化用的密码与旧程序不同，请<b>用旧程序的密码</b>重新初始化（初始化页勾选「旧版本保险箱」）。若密码确实已经更换、也没有备份，这些笔记无法恢复，只能重置数据库后重新开始。</p>
+<code class="km-cmd">npx wrangler d1 execute s-qrypt-db --remote --command "DELETE FROM config WHERE id = 'app_config'"</code>
 </div>
 <div id="note-list"></div>
 <div id="loading-state"><div class="sk-row"><div class="sk sk-title"></div><div class="sk sk-meta"></div></div><div class="sk-row"><div class="sk sk-title"></div><div class="sk sk-meta"></div></div><div class="sk-row"><div class="sk sk-title"></div><div class="sk sk-meta"></div></div></div>

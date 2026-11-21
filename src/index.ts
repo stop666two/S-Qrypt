@@ -75,6 +75,8 @@ async function ensureSchema(db: D1Database): Promise<void> {
   );
   await ensureColumn(db, 'config', 'verification_token_hash', "ALTER TABLE config ADD COLUMN verification_token_hash TEXT NOT NULL DEFAULT ''");
   await ensureColumn(db, 'config', 'salt', "ALTER TABLE config ADD COLUMN salt TEXT NOT NULL DEFAULT ''");
+  await ensureColumn(db, 'config', 'kdf_mb', "ALTER TABLE config ADD COLUMN kdf_mb INTEGER NOT NULL DEFAULT 0");
+  await ensureColumn(db, 'config', 'kdf_ro', "ALTER TABLE config ADD COLUMN kdf_ro INTEGER NOT NULL DEFAULT 0");
   await ensureColumn(db, 'config', 'audit_public_key', "ALTER TABLE config ADD COLUMN audit_public_key TEXT NOT NULL DEFAULT ''");
   await ensureColumn(db, 'config', 'token_issued_at', "ALTER TABLE config ADD COLUMN token_issued_at INTEGER NOT NULL DEFAULT 0");
   await db.exec(
@@ -337,23 +339,35 @@ export default {
       const rl = await writeRateLimit(env.DB, 'token:' + ip, RATE_MAX_READ);
       if (rl) return rl;
       const config = await env.DB.prepare(
-        'SELECT salt, audit_public_key, token_issued_at FROM config WHERE id = ?'
-      ).bind('app_config').first<{ salt: string; audit_public_key: string; token_issued_at: number }>();
+        'SELECT salt, audit_public_key, token_issued_at, kdf_mb, kdf_ro FROM config WHERE id = ?'
+      ).bind('app_config').first<{ salt: string; audit_public_key: string; token_issued_at: number; kdf_mb: number; kdf_ro: number }>();
       if (!config) return errorResponse('not_initialized', 404);
-      // The salt is a public KDF input: knowing it does not skip the KDF, and a
-      // per-vault value is what stops precomputed tables from being reusable.
+      // The salt and the KDF cost parameters are public inputs: knowing them does not
+      // skip the KDF. Both are returned so a vault always re-derives on the same
+      // recipe regardless of the device that opens it.
       return jsonResponse({
         salt: config.salt || undefined,
         audit_public_key: config.audit_public_key || undefined,
         token_issued_at: config.token_issued_at || undefined,
+        kdf_mb: config.kdf_mb || undefined,
+        kdf_ro: config.kdf_ro || undefined,
       }, 200, { 'Cache-Control': 'no-store' });
     }
 
     // POST /api/init — initialize vault
     if (path === `${API_PREFIX}/init` && method === 'POST') {
-      const existing = await env.DB.prepare(
-        'SELECT init_completed FROM config WHERE id = ?'
-      ).bind('app_config').first<{ init_completed: number }>();
+      // A failed read must never look like "not initialized": continuing would let
+      // the upsert below overwrite a live vault (new salt -> new MK -> old notes
+      // become undecryptable). Fail closed instead.
+      let existing: { init_completed: number } | null = null;
+      try {
+        existing = await env.DB.prepare(
+          'SELECT init_completed FROM config WHERE id = ?'
+        ).bind('app_config').first<{ init_completed: number }>();
+      } catch (e) {
+        console.warn('[s-qrypt] init: config read failed', e instanceof Error ? e.message : e);
+        return errorResponse('db_unavailable', 503);
+      }
       if (existing && existing.init_completed === 1) {
         return errorResponse('already_initialized', 409);
       }
@@ -365,6 +379,9 @@ export default {
         salt?: string;
         kdf_version?: number;
         audit_public_key?: string;
+        kdf_mb?: number;
+        kdf_ro?: number;
+        force?: boolean;
       };
       try {
         body = await request.json();
@@ -387,13 +404,37 @@ export default {
       if (body.kdf_version !== undefined && (body.kdf_version !== 1 && body.kdf_version !== 2 && body.kdf_version !== 3)) return errorResponse('invalid_kdf_version', 400);
       const newKdfVersion = body.kdf_version ?? 1;
       const newSalt = typeof body.salt === 'string' ? body.salt : '';
+      // KDF cost parameters are part of the key recipe: a vault must reuse the exact
+      // same values on every device, so they are stored once and returned by /api/token.
+      const kdfMbRaw = body.kdf_mb === undefined ? 0 : Number(body.kdf_mb);
+      const kdfRoRaw = body.kdf_ro === undefined ? 0 : Number(body.kdf_ro);
+      if (!Number.isInteger(kdfMbRaw) || !Number.isInteger(kdfRoRaw)) return errorResponse('invalid_kdf_params', 400);
+      if ((kdfMbRaw === 0) !== (kdfRoRaw === 0)) return errorResponse('invalid_kdf_params', 400);
+      if (kdfMbRaw !== 0 && (kdfMbRaw < 8 || kdfMbRaw > 512 || kdfRoRaw < 16 || kdfRoRaw > 8192)) return errorResponse('invalid_kdf_params', 400);
+      const newKdfMb = kdfMbRaw;
+      const newKdfRo = kdfRoRaw;
       // v3 binds a per-vault random salt into the KDF; without it the recipe is not v3.
       if (newKdfVersion === 3 && !/^[0-9a-f]{32}$/i.test(newSalt)) return errorResponse('invalid_salt', 400);
 
+      // Second guard for the same disaster: real notes with no config row means the
+      // vault was probably just read as empty. Only an explicit force may overwrite.
+      if (body.force !== true) {
+        let noteCount: { cnt: number } | null = null;
+        try {
+          noteCount = await env.DB.prepare('SELECT COUNT(*) as cnt FROM notes WHERE is_test = 0').first<{ cnt: number }>();
+        } catch (e) {
+          console.warn('[s-qrypt] init: notes probe failed', e instanceof Error ? e.message : e);
+          return errorResponse('db_unavailable', 503);
+        }
+        if ((noteCount?.cnt ?? 0) > 0) {
+          return errorResponse('orphan_notes', 409);
+        }
+      }
+
       const verificationTokenHash = await hexSha256(body.verification_token);
       await env.DB.prepare(
-        `INSERT INTO config (id, verification_token, verification_token_hash, operation_token_hash, init_completed, kdf_version, salt, audit_public_key, token_issued_at)
-         VALUES (?, '', ?, ?, 1, ?, ?, ?, ?)
+        `INSERT INTO config (id, verification_token, verification_token_hash, operation_token_hash, init_completed, kdf_version, salt, audit_public_key, token_issued_at, kdf_mb, kdf_ro)
+         VALUES (?, '', ?, ?, 1, ?, ?, ?, ?, ?, ?)
          ON CONFLICT (id) DO UPDATE SET
            verification_token = '',
            verification_token_hash = excluded.verification_token_hash,
@@ -402,7 +443,9 @@ export default {
            kdf_version = excluded.kdf_version,
            salt = excluded.salt,
            audit_public_key = excluded.audit_public_key,
-           token_issued_at = excluded.token_issued_at`
+           token_issued_at = excluded.token_issued_at,
+           kdf_mb = excluded.kdf_mb,
+           kdf_ro = excluded.kdf_ro`
       ).bind(
         'app_config',
         verificationTokenHash,
@@ -410,7 +453,9 @@ export default {
         newKdfVersion,
         newSalt,
         body.audit_public_key ?? '',
-        Date.now()
+        Date.now(),
+        newKdfMb,
+        newKdfRo
       ).run();
 
       return jsonResponse({ status: 'ok' }, 201);
@@ -441,9 +486,15 @@ export default {
         if (!validateString(body.verification_token, 128) || !/^[0-9a-f]+$/i.test(body.verification_token)) return errorResponse('invalid_verification_token', 400);
         if (!validateString(body.operation_token_hash, 128) || !/^[0-9a-f]+$/i.test(body.operation_token_hash)) return errorResponse('invalid_operation_token_hash', 400);
         const vHash = await hexSha256(body.verification_token);
+        const umMb = body.kdf_mb === undefined ? null : Number(body.kdf_mb);
+        const umRo = body.kdf_ro === undefined ? null : Number(body.kdf_ro);
+        if (umMb !== null || umRo !== null) {
+          if (!Number.isInteger(umMb) || !Number.isInteger(umRo)) return errorResponse('invalid_kdf_params', 400);
+          if ((umMb as number) < 8 || (umMb as number) > 512 || (umRo as number) < 16 || (umRo as number) > 8192) return errorResponse('invalid_kdf_params', 400);
+        }
         await env.DB.prepare(
-          "UPDATE config SET verification_token = '', verification_token_hash = ?, operation_token_hash = ?, kdf_version = 3, token_issued_at = ? WHERE id = ?"
-        ).bind(vHash, body.operation_token_hash, Date.now(), 'app_config').run();
+          "UPDATE config SET verification_token = '', verification_token_hash = ?, operation_token_hash = ?, kdf_version = 3, token_issued_at = ?, kdf_mb = COALESCE(?, kdf_mb), kdf_ro = COALESCE(?, kdf_ro) WHERE id = ?"
+        ).bind(vHash, body.operation_token_hash, Date.now(), umMb, umRo, 'app_config').run();
         return jsonResponse({ status: 'upgraded', kdf_version: 3 });
       }
 
