@@ -225,7 +225,8 @@ button{cursor:pointer;background:none;border:none}
 
 /* ---------- dialogs & panels ---------- */
 #confirm-dialog,#trash-panel,#audit-panel,#audit-key-overlay{
-  position:fixed;inset:0;z-index:800;display:none;align-items:center;justify-content:center;padding:20px;
+  /* 必须高于 .screen(1000)：否则初始化/解锁整屏会把对话框按钮盖住，点不动 */
+  position:fixed;inset:0;z-index:1500;display:none;align-items:center;justify-content:center;padding:20px;
   background:rgba(6,6,6,.62);backdrop-filter:blur(8px);
 }
 #confirm-dialog.active,#trash-panel.active,#audit-panel.active{display:flex}

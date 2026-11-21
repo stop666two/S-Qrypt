@@ -574,9 +574,12 @@ export default {
       const cfg = await env.DB.prepare('SELECT init_completed FROM config WHERE id = ?')
         .bind('app_config').first<{ init_completed: number }>();
       if (!cfg || cfg.init_completed !== 1) {
-        // Bootstrap may create exactly one placeholder note, nothing else.
-        const existing = await env.DB.prepare('SELECT COUNT(*) as cnt FROM notes').first<{ cnt: number }>();
-        if ((existing?.cnt ?? 0) > 0) return errorResponse('placeholder_exists', 409);
+        // Bootstrap runs before any config exists; the caller already proved operator
+        // intent with SETUP_TOKEN above. Only placeholder rows may be created, and the
+        // cap counts is_test=1 rows — a real vault's notes must not block a deliberate
+        // reset (DELETE config → init), while a leaked token still cannot fill the DB.
+        const existing = await env.DB.prepare('SELECT COUNT(*) as cnt FROM notes WHERE is_test = 1').first<{ cnt: number }>();
+        if ((existing?.cnt ?? 0) >= 20) return errorResponse('placeholder_exists', 409);
       }
 
       const result = await env.DB.prepare(

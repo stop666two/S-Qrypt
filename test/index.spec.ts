@@ -656,3 +656,53 @@ describe('vault-bound KDF parameters', () => {
     expect(tok.data.kdf_ro).toBe(80);
   });
 });
+
+describe('reset path (delete config, notes remain)', () => {
+  const initBody = {
+    verification_token: 'a'.repeat(64),
+    operation_token_hash: TEST_TOKEN_HASH,
+    kdf_version: 3,
+    salt: 'c'.repeat(32),
+    kdf_mb: 32,
+    kdf_ro: 128,
+    setup_token: 'test-setup-token',
+  };
+
+  it('still creates a placeholder after config is gone while real notes remain', async () => {
+    await env.DB.exec('DELETE FROM notes');
+    await env.DB.exec('DELETE FROM config');
+
+    const ph = await jsonFetch('/api/note', {
+      method: 'POST',
+      body: JSON.stringify({ operation_token: TEST_TOKEN, setup_token: 'test-setup-token' }),
+    });
+    expect(ph.status).toBe(201);
+    await jsonFetch(`/api/note/${ph.data.id}`, {
+      method: 'PUT',
+      body: JSON.stringify({
+        operation_token: TEST_TOKEN,
+        encrypted_meta_packet: 'bWV0YQ==',
+        encrypted_body: 'Ym9keQ==',
+        is_test: 1,
+        setup_token: 'test-setup-token',
+      }),
+    });
+    expect((await jsonFetch('/api/init', { method: 'POST', body: JSON.stringify(initBody) })).status).toBe(201);
+
+    const real = await jsonFetch('/api/note', {
+      method: 'POST',
+      body: JSON.stringify({ operation_token: TEST_TOKEN }),
+    });
+    expect(real.status).toBe(201);
+
+    // 迁移动作：配置被删、笔记还在
+    await env.DB.exec('DELETE FROM config');
+    const again = await jsonFetch('/api/note', {
+      method: 'POST',
+      body: JSON.stringify({ operation_token: TEST_TOKEN, setup_token: 'test-setup-token' }),
+    });
+    // 旧实现数「全部笔记」，这里会 409 placeholder_exists，迁移被彻底堵死
+    expect(again.status).toBe(201);
+    expect(again.data.id).toBeGreaterThan(0);
+  });
+});
