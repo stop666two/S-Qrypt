@@ -31,11 +31,21 @@ describe('S-Qrypt v1.0.0 API', () => {
     expect(res.status).toBe(200);
     const text = await res.text();
     expect(text).toContain('S-Qrypt');
-    expect(text).toContain('deriveKA');
-    expect(text).toContain('deriveKB');
-    // Argon2id must be loadable by the page itself; there is no sandbox iframe.
+    // Argon2id and the SPA itself are separate same-origin scripts, so the CSP
+    // can keep script-src free of 'unsafe-inline'.
     expect(text).toContain('src="/argon2.js"');
+    expect(text).toContain('src="/app.js"');
     expect(text).not.toContain('/crypto-sandbox');
+    expect(res.headers.get('Content-Security-Policy')).not.toContain("script-src 'self' 'unsafe-inline'");
+  });
+
+  it('serves the SPA bundle as a script', async () => {
+    const res = await SELF.fetch('http://localhost/app.js');
+    expect(res.status).toBe(200);
+    expect(res.headers.get('Content-Type')).toContain('application/javascript');
+    const body = await res.text();
+    expect(body).toContain('deriveKA');
+    expect(body).toContain('HKDF');
   });
 
   it('init-check returns not_initialized', async () => {
@@ -406,6 +416,20 @@ describe('S-Qrypt v1.0.0 API', () => {
       }),
     });
     expect(withOpToken.status).toBe(201);
+  });
+
+  it('reports a total consistent with the page that returned it (R-25)', async () => {
+    const headers = { 'X-Verification-Token': 'af3f8e6d9a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f' };
+    const first = await jsonFetch('/api/notes?offset=0&limit=1', { headers });
+    expect(first.status).toBe(200);
+    expect(first.data.notes).toHaveLength(1);
+    expect(first.data.total).toBeGreaterThanOrEqual(2);
+    expect(first.data.notes[0].total).toBeUndefined();
+
+    const beyond = await jsonFetch('/api/notes?offset=9999&limit=1', { headers });
+    expect(beyond.status).toBe(200);
+    expect(beyond.data.notes).toHaveLength(0);
+    expect(beyond.data.total).toBe(first.data.total);
   });
 
   it('does not throttle a 20-note import at 40 writes (R-03)', { timeout: 60000 }, async () => {

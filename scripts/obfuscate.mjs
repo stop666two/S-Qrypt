@@ -1,7 +1,7 @@
 /**
  * S-Qrypt Control Flow Flattening Build Script
- * Extracts inline JS from template strings in homeHtml.ts / cryptoSandboxHtml.ts,
- * applies javascript-obfuscator controlFlowFlattening, and re-embeds.
+ * src/app.client.txt holds the SPA's JavaScript as a plain text asset; it is
+ * obfuscated in place and restored by scripts/deploy.mjs afterwards.
  */
 import { readFileSync, writeFileSync, existsSync, unlinkSync } from 'fs';
 import { execSync } from 'child_process';
@@ -10,22 +10,7 @@ import { dirname, resolve } from 'path';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const SRC_DIR = resolve(__dirname, '../src/') + '/';
-const FILES = ['homeHtml.ts'];
-
-function extractJS(content, file) {
-  // Find the <script> ... </script> section
-  const scriptStart = content.indexOf('<script>');
-  const scriptEnd = content.lastIndexOf('</script>');
-  if (scriptStart === -1 || scriptEnd === -1) {
-    console.log(`  [skip] no <script> found in ${file}`);
-    return null;
-  }
-  // Extract JS including the tag markers for re-embedding
-  const before = content.slice(0, scriptStart);
-  const jsRaw = content.slice(scriptStart + '<script>'.length, scriptEnd);
-  const after = content.slice(scriptEnd + '</script>'.length);
-  return { before, js: jsRaw, after };
-}
+const FILES = ['app.client.txt'];
 
 function obfuscateJS(js) {
   // Write JS to temp file, run obfuscator, read back
@@ -70,20 +55,10 @@ function obfuscateJS(js) {
 for (const file of FILES) {
   console.log(`Processing ${file}...`);
   const path = `${SRC_DIR}${file}`;
-  const content = readFileSync(path, 'utf-8');
-  const parts = extractJS(content, file);
-  if (!parts) continue;
-
-  const obfJS = obfuscateJS(parts.js).replace(/<\/script>/gi, '<\\/script>');
-  console.log(`  JS length: ${parts.js.length} chars → obfuscated: ${obfJS.length} chars`);
-  const newContent = parts.before + '<script>' + obfJS + '</script>' + parts.after;
-  if (!newContent.includes('<script>') || !newContent.includes('</script>')) {
-    throw new Error(`Invalid output for ${file}: missing <script> markers`);
-  }
-  if (newContent === content) {
-    throw new Error(`No changes for ${file}: output equals input`);
-  }
-  writeFileSync(path, newContent, 'utf-8');
+  const js = readFileSync(path, 'utf-8');
+  const obfJS = obfuscateJS(js);
+  console.log(`  JS length: ${js.length} chars → obfuscated: ${obfJS.length} chars`);
+  writeFileSync(path, obfJS, 'utf-8');
   console.log(`  Written to ${file}`);
 }
 console.log('Done.');

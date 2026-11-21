@@ -4,23 +4,18 @@ import { dirname, join } from 'path';
 import { fileURLToPath } from 'url';
 
 const root = dirname(dirname(fileURLToPath(import.meta.url)));
-const src = readFileSync(join(root, 'src', 'homeHtml.ts'), 'utf8');
-const m = src.match(/<script>([\s\S]*?)<\/script>$/m);
-if (!m) {
-  console.error('crypto-kat: no inline <script> block found in homeHtml.ts');
-  process.exit(1);
-}
+const src = readFileSync(join(root, 'src', 'app.client.txt'), 'utf8');
 
 // Only the primitive block is needed; the rest of the SPA touches the DOM.
-const start = m[1].indexOf('// SHA-256');
-const end = m[1].indexOf('// Web Crypto wrappers');
+const start = src.indexOf('// SHA-256');
+const end = src.indexOf('// Web Crypto wrappers');
 if (start === -1 || end === -1) {
-  console.error('crypto-kat: cannot locate the SHA-256/sha224 block in homeHtml.ts');
+  console.error('crypto-kat: cannot locate the SHA-256/sha224 block in src/app.client.txt');
   process.exit(1);
 }
 
 const sandbox = { TextEncoder, TextDecoder, atob, btoa, crypto: { subtle: {} } };
-runInNewContext(m[1].slice(start, end), sandbox);
+runInNewContext(src.slice(start, end), sandbox);
 
 const hex = (b) => Array.from(new Uint8Array(b)).map(x => x.toString(16).padStart(2, '0')).join('');
 const KAT = [
@@ -44,4 +39,4 @@ if (failed > 0) {
   console.error(`crypto-kat: ${failed}/${KAT.length} vectors failed`);
   process.exit(1);
 }
-console.log(`crypto-kat OK: ${KAT.length} FIPS 180-4 vectors passed (src/homeHtml.ts)`);
+console.log(`crypto-kat OK: ${KAT.length} FIPS 180-4 vectors passed (src/app.client.txt)`);

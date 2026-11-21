@@ -1,5 +1,6 @@
 import { homeHtml } from './homeHtml';
 import { deployHtml } from './deployHtml';
+import appJs from './app.client.txt';
 import { argon2WasmBase64, argon2Js } from './argon2Files';
 
 declare function atob(s: string): string;
@@ -33,7 +34,7 @@ function htmlResponse(body: string): Response {
     status: 200,
     headers: {
       'Content-Type': 'text/html; charset=utf-8',
-      'Content-Security-Policy': "default-src 'self'; script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval' https://static.cloudflareinsights.com; style-src 'self' 'unsafe-inline'; object-src 'none'; img-src 'self' data: blob: https://static.cloudflareinsights.com; connect-src 'self' https://static.cloudflareinsights.com; frame-ancestors 'none';",
+      'Content-Security-Policy': "default-src 'self'; script-src 'self' 'wasm-unsafe-eval' https://static.cloudflareinsights.com; style-src 'self' 'unsafe-inline'; object-src 'none'; img-src 'self' data: blob: https://static.cloudflareinsights.com; connect-src 'self' https://static.cloudflareinsights.com; frame-ancestors 'none';",
       'X-Frame-Options': 'DENY',
       'Cross-Origin-Opener-Policy': 'same-origin',
       'Cross-Origin-Embedder-Policy': 'require-corp',
@@ -254,6 +255,18 @@ export default {
       );
     }
 
+    // SPA bundle: served as a real script so the CSP can drop 'unsafe-inline'
+    if (path === '/app.js') {
+      return new Response(appJs, {
+        status: 200,
+        headers: {
+          'Content-Type': 'application/javascript; charset=utf-8',
+          'X-Content-Type-Options': 'nosniff',
+          'Cache-Control': 'no-store',
+        },
+      });
+    }
+
     // Self-hosted argon2 WASM (sandbox cross-origin compatible)
     if (path === '/argon2.wasm') {
       return new Response(arg2wasm(), {
@@ -403,13 +416,33 @@ export default {
       const whereClause = showDeleted
         ? "WHERE is_test != 1 AND deleted = 1"
         : "WHERE is_test != 1 AND deleted != 1";
-      const totalRow = await env.DB.prepare(
-        `SELECT COUNT(*) as cnt FROM notes ${whereClause}`
-      ).first<{ cnt: number }>();
+      // One statement so `total` and the page can never disagree; COUNT(*) OVER()
+      // rides along with the page instead of a second COUNT query.
       const rows = await env.DB.prepare(
-        `SELECT id, encrypted_meta_packet, is_test, deleted, created_at, updated_at FROM notes ${whereClause} ORDER BY id ASC LIMIT ? OFFSET ?`
-      ).bind(limit, offset).all<{ id: number; encrypted_meta_packet: string; is_test: number; deleted: number }>();
-      return jsonResponse({ notes: rows.results, total: totalRow?.cnt ?? 0, offset, limit });
+        `SELECT id, encrypted_meta_packet, is_test, deleted, created_at, updated_at, COUNT(*) OVER() AS total FROM notes ${whereClause} ORDER BY id ASC LIMIT ? OFFSET ?`
+      ).bind(limit, offset).all<{
+        id: number;
+        encrypted_meta_packet: string;
+        is_test: number;
+        deleted: number;
+        created_at: string;
+        updated_at: string;
+        total: number;
+      }>();
+      const page = rows.results ?? [];
+      // An out-of-range offset returns no rows, so the window value is unavailable.
+      const total = page.length
+        ? Number(page[0].total)
+        : ((await env.DB.prepare(`SELECT COUNT(*) as cnt FROM notes ${whereClause}`).first<{ cnt: number }>())?.cnt ?? 0);
+      const notes = page.map((r) => ({
+        id: r.id,
+        encrypted_meta_packet: r.encrypted_meta_packet,
+        is_test: r.is_test,
+        deleted: r.deleted,
+        created_at: r.created_at,
+        updated_at: r.updated_at,
+      }));
+      return jsonResponse({ notes, total, offset, limit });
     }
 
     // POST /api/note — create placeholder note

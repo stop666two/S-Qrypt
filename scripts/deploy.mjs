@@ -7,7 +7,7 @@
  */
 import { spawnSync } from 'child_process';
 
-const SOURCES = ['src/homeHtml.ts'];
+const SOURCES = ['src/app.client.txt'];
 
 function run(cmd, args) {
   const r = spawnSync(cmd, args, { stdio: 'inherit', shell: true });

@@ -198,6 +198,7 @@ npm run setup        # 一键 D1 创建 + 部署（结束后把 database_id 还�
 | 层次 | 机制 | 说明 |
 |------|------|------|
 | **传输** | HTTPS + CSP + COOP + COEP + frame-ancestors | 防 XSS、防 Spectre、防中间人、防点击劫持 |
+| **脚本来源** | 脚本外链 + script-src 无 unsafe-inline | SPA 与 Argon2 均为同源独立脚本，注入的内联脚本无法执行 |
 | **存储** | AES-256-GCM 认证加密 | 每次加密随机 IV，认证标签防篡改 |
 | **密钥** | 仅驻留页面内存 | 60 秒无操作自动清零，锁定同时清空 DOM 中的明文 |
 | **令牌** | HKDF 派生 operation_token | 每次写操作需携带，防 CSRF/越权 |
@@ -303,6 +304,7 @@ operation_token: <hex_token>          # 所有 POST/PUT/PATCH/DELETE 请求体�
 |------|-------------|------|
 | `/` | text/html | 主页面 SPA |
 | `/deploy` | text/html | 部署指南页 |
+| `/app.js` | application/javascript | SPA 脚本（`src/app.client.txt`，部署时混淆） |
 | `/argon2.js` | application/javascript | argon2 WASM 加载器（自托管，主页直接加载） |
 | `/argon2.wasm` | application/wasm | argon2 WASM 二进制 |
 | `/manifest.webmanifest` | application/json | PWA 清单 |
@@ -328,7 +330,8 @@ operation_token: <hex_token>          # 所有 POST/PUT/PATCH/DELETE 请求体�
 s-qrypt/
 ├── src/
 │   ├── index.ts                # Cloudflare Worker 入口 (API + CSP + 路由)
-│   ├── homeHtml.ts             # 主页面 SPA (CSS + HTML + JS 模板字符串)
+│   ├── homeHtml.ts             # 主页面外壳 (CSS + HTML)
+│   ├── app.client.txt          # SPA 脚本（纯 JS 文本资源，CSP 外链，部署时混淆）
 │   ├── deployHtml.ts           # 部署指南页模板
 │   └── argon2Files.ts          # Argon2 WASM/JS 内嵌 (自托管)
 ├── public/
@@ -336,7 +339,7 @@ s-qrypt/
 ├── scripts/
 │   ├── setup.mjs               # 一键部署脚本 (D1 + Worker)
 │   ├── deploy.mjs              # 部署流水线 (混淆 → deploy → 必定还原源码)
-│   ├── check-clean.mjs         # 部署前确认混淆输入无未提交改动
+│   ├── check-clean.mjs         # 部署前确认 src/app.client.txt 无未提交改动
 │   ├── obfuscate.mjs           # JS 控制流混淆
 │   └── crypto-kat.mjs          # 密码学已知答案测试 (FIPS 180-4 KAT，npm test 自动执行)
 ├── migrations/

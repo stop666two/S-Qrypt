@@ -4,8 +4,8 @@ import { execSync } from 'child_process';
 // uncommitted changes: obfuscate.mjs overwrites it in place and the pipeline
 // restores it via git checkout at the end.
 try {
-  execSync('git diff --quiet -- src/homeHtml.ts', { stdio: 'pipe' });
+  execSync('git diff --quiet -- src/app.client.txt', { stdio: 'pipe' });
 } catch {
-  console.error('error: uncommitted changes in src/homeHtml.ts would be destroyed by deploy, commit or stash first');
+  console.error('error: uncommitted changes in src/app.client.txt would be destroyed by deploy, commit or stash first');
   process.exit(1);
 }

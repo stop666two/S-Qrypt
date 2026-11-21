@@ -126,3 +126,8 @@ interface ExecutionContext {
   waitUntil(promise: Promise<unknown>): void;
   passThroughOnException(): void;
 }
+
+declare module '*.txt' {
+  const content: string;
+  export default content;
+}

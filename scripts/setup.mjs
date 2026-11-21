@@ -131,11 +131,11 @@ async function deployWorker() {
   } catch (e) {
     deployError = e;
   } finally {
-    // Always restore: obfuscate.mjs rewrites src/homeHtml.ts in place.
+    // Always restore: obfuscate.mjs rewrites src/app.client.txt in place.
     try {
-      execSync('git checkout -- src/homeHtml.ts', { stdio: 'inherit', shell: true });
+      execSync('git checkout -- src/app.client.txt', { stdio: 'inherit', shell: true });
     } catch (e) {
-      console.warn('   ⚠ 还原 src/homeHtml.ts 失败，请手工 git checkout');
+      console.warn('   ⚠ 还原 src/app.client.txt 失败，请手工 git checkout');
     }
   }
   if (deployError) throw deployError;
