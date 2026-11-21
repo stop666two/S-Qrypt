@@ -41,6 +41,8 @@ npx wrangler d1 export s-qrypt-db --remote --output d1-backup-$(date +%Y%m%d).sq
 
 中途失败（网络断、某篇 409）时客户端会提示"N 篇失败、M 篇已完成"，**重新登录后可续做**：已完成的是 v3，未完成的仍是旧配方，不会重复加密。
 
+> 这条「中断可续做」路径已在真实 Chromium + 真实 D1 上端到端验证：真 v2 库 → 落盐 → 只升级 1/3 → 重登录（新旧两把 MK 同时可读）→ 续做只补剩余 2 篇 → 再次登录稳定。证据见 `docs/review/2026-11-21-full-review.md` 附录 H。
+
 ```mermaid
 flowchart LR
   A[旧版密文 v1/v2] --> B[解锁]
