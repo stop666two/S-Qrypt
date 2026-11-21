@@ -34,7 +34,7 @@ function htmlResponse(body: string): Response {
     status: 200,
     headers: {
       'Content-Type': 'text/html; charset=utf-8',
-      'Content-Security-Policy': "default-src 'self'; script-src 'self' 'wasm-unsafe-eval' https://static.cloudflareinsights.com; style-src 'self' 'unsafe-inline'; object-src 'none'; img-src 'self' data: blob: https://static.cloudflareinsights.com; connect-src 'self' https://static.cloudflareinsights.com; frame-ancestors 'none';",
+      'Content-Security-Policy': "default-src 'self'; script-src 'self' 'wasm-unsafe-eval' https://static.cloudflareinsights.com; style-src 'self' 'unsafe-inline'; object-src 'none'; base-uri 'none'; form-action 'none'; img-src 'self' data: blob: https://static.cloudflareinsights.com; connect-src 'self' https://static.cloudflareinsights.com; frame-ancestors 'none';",
       'X-Frame-Options': 'DENY',
       'Cross-Origin-Opener-Policy': 'same-origin',
       'Cross-Origin-Embedder-Policy': 'require-corp',
@@ -76,11 +76,14 @@ async function ensureSchema(db: D1Database): Promise<void> {
   await ensureColumn(db, 'config', 'verification_token_hash', "ALTER TABLE config ADD COLUMN verification_token_hash TEXT NOT NULL DEFAULT ''");
   await ensureColumn(db, 'config', 'salt', "ALTER TABLE config ADD COLUMN salt TEXT NOT NULL DEFAULT ''");
   await ensureColumn(db, 'config', 'audit_public_key', "ALTER TABLE config ADD COLUMN audit_public_key TEXT NOT NULL DEFAULT ''");
+  await ensureColumn(db, 'config', 'token_issued_at', "ALTER TABLE config ADD COLUMN token_issued_at INTEGER NOT NULL DEFAULT 0");
   await db.exec(
     "CREATE TABLE IF NOT EXISTS notes (id INTEGER PRIMARY KEY AUTOINCREMENT, encrypted_meta_packet TEXT NOT NULL DEFAULT '', encrypted_body TEXT NOT NULL DEFAULT '', is_test INTEGER NOT NULL DEFAULT 0 CHECK (is_test IN (0,1)), deleted INTEGER NOT NULL DEFAULT 0 CHECK (deleted IN (0,1)), created_at TEXT DEFAULT (datetime('now')), updated_at TEXT DEFAULT (datetime('now')))"
   );
   await ensureColumn(db, 'notes', 'created_at', "ALTER TABLE notes ADD COLUMN created_at TEXT DEFAULT (datetime('now'))");
   await ensureColumn(db, 'notes', 'updated_at', "ALTER TABLE notes ADD COLUMN updated_at TEXT DEFAULT (datetime('now'))");
+  // 0 = follow the vault's kdf_version; 1/2/3 = the salt+Argon2 recipe this row was encrypted with.
+  await ensureColumn(db, 'notes', 'kdf_version', "ALTER TABLE notes ADD COLUMN kdf_version INTEGER NOT NULL DEFAULT 0");
   await db.exec("CREATE TABLE IF NOT EXISTS auth_limits (key TEXT PRIMARY KEY, attempts INTEGER NOT NULL DEFAULT 0, window_start INTEGER NOT NULL, locked_until INTEGER NOT NULL DEFAULT 0)");
   await db.exec("CREATE TABLE IF NOT EXISTS audit_logs (id INTEGER PRIMARY KEY AUTOINCREMENT, encrypted_entry TEXT NOT NULL, fingerprint_hash TEXT NOT NULL, created_at TEXT DEFAULT (datetime('now')))");
   await db.exec("CREATE INDEX IF NOT EXISTS idx_audit_created ON audit_logs(created_at)");
@@ -122,28 +125,22 @@ async function requireVerificationToken(request: Request, db: D1Database): Promi
   const ip = await getClientIp(request);
   // Failed authentication is what gets throttled; a valid token costs nothing.
   const deny = async (): Promise<Response> => {
+    // Per-IP buckets can be dodged by rotating addresses; the global bucket cannot.
+    const gross = await writeRateLimit(db, 'auth:global', RATE_MAX_AUTH_GLOBAL);
+    if (gross) return gross;
     const rl = await writeRateLimit(db, 'auth:' + ip, RATE_MAX_READ);
     return rl ?? errorResponse('unauthorized', 401);
   };
-  const config = await db.prepare('SELECT init_completed, verification_token, verification_token_hash FROM config WHERE id = ?')
-    .bind('app_config').first<{ init_completed: number; verification_token: string; verification_token_hash: string }>();
+  const config = await db.prepare('SELECT init_completed, verification_token_hash, token_issued_at FROM config WHERE id = ?')
+    .bind('app_config').first<{ init_completed: number; verification_token_hash: string; token_issued_at: number }>();
   if (!config || config.init_completed !== 1) return deny();
   const token = request.headers.get('X-Verification-Token');
   if (!token) return deny();
-  if (config.verification_token_hash) {
-    if (!constantTimeEqual(await hexSha256(token), config.verification_token_hash)) {
-      return deny();
-    }
-  } else if (config.verification_token) {
-    if (!constantTimeEqual(token, config.verification_token)) {
-      return deny();
-    }
-    const vHash = await hexSha256(token);
-    await db.prepare(
-      "UPDATE config SET verification_token_hash = ?, verification_token = '' WHERE id = ?"
-    ).bind(vHash, 'app_config').run();
-  } else {
-    return deny();
+  if (!config.verification_token_hash) return deny();
+  if (!constantTimeEqual(await hexSha256(token), config.verification_token_hash)) return deny();
+  // issued_at 0 means a vault created before expiry existed: not enforced.
+  if (config.token_issued_at > 0 && Date.now() - config.token_issued_at > TOKEN_TTL_MS) {
+    return jsonResponse({ error: 'token_expired' }, 401);
   }
   return null;
 }
@@ -151,7 +148,13 @@ async function requireVerificationToken(request: Request, db: D1Database): Promi
 function csrfCheck(request: Request, url: URL): Response | null {
   const origin = request.headers.get('Origin');
   const referer = request.headers.get('Referer');
-  if (!origin && !referer) return null;
+  if (!origin && !referer) {
+    // No Origin/Referer: fall back to the browser-set fetch metadata instead of
+    // letting the request through unexamined. 'none' is a user-initiated load.
+    const site = request.headers.get('Sec-Fetch-Site');
+    if (site && site !== 'same-origin' && site !== 'none') return jsonResponse({ error: 'forbidden_origin' }, 403);
+    return null;
+  }
   // Anything that is not literally this deployment's own origin is rejected;
   // "any https site" is not an allow-list.
   const allowed = (s: string) => {
@@ -184,6 +187,8 @@ const RATE_WINDOW_MS = 300000;
 const RATE_LOCK_MS = 600000;
 const RATE_MAX_WRITE = 40;
 const RATE_MAX_READ = 100;
+const RATE_MAX_AUTH_GLOBAL = 500;
+const TOKEN_TTL_MS = 90 * 24 * 3600 * 1000;
 
 // D1 has no SQL-level primary hint: a comment in the query text is inert. If
 // read replication is ever enabled for this database, reads must go through the
@@ -267,14 +272,12 @@ export default {
       });
     }
 
-    // Self-hosted argon2 WASM (sandbox cross-origin compatible)
+    // Self-hosted argon2 WASM
     if (path === '/argon2.wasm') {
       return new Response(arg2wasm(), {
         status: 200,
         headers: {
           'Content-Type': 'application/wasm',
-          'Access-Control-Allow-Origin': '*',
-          'Cross-Origin-Resource-Policy': 'cross-origin',
           'Cache-Control': 'public, max-age=31536000, immutable',
         },
       });
@@ -297,7 +300,7 @@ export default {
         status: 200,
         headers: {
           'Content-Type': 'text/html; charset=utf-8',
-          'Content-Security-Policy': "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; frame-ancestors 'none';",
+          'Content-Security-Policy': "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; base-uri 'none'; form-action 'none'; frame-ancestors 'none';",
           'X-Frame-Options': 'DENY',
           'Cross-Origin-Resource-Policy': 'cross-origin',
           'X-Content-Type-Options': 'nosniff',
@@ -334,11 +337,15 @@ export default {
       const rl = await writeRateLimit(env.DB, 'token:' + ip, RATE_MAX_READ);
       if (rl) return rl;
       const config = await env.DB.prepare(
-        'SELECT audit_public_key FROM config WHERE id = ?'
-      ).bind('app_config').first<{ audit_public_key: string }>();
+        'SELECT salt, audit_public_key, token_issued_at FROM config WHERE id = ?'
+      ).bind('app_config').first<{ salt: string; audit_public_key: string; token_issued_at: number }>();
       if (!config) return errorResponse('not_initialized', 404);
+      // The salt is a public KDF input: knowing it does not skip the KDF, and a
+      // per-vault value is what stops precomputed tables from being reusable.
       return jsonResponse({
+        salt: config.salt || undefined,
         audit_public_key: config.audit_public_key || undefined,
+        token_issued_at: config.token_issued_at || undefined,
       }, 200, { 'Cache-Control': 'no-store' });
     }
 
@@ -377,12 +384,16 @@ export default {
       if (!validateString(body.operation_token_hash, 128) || !/^[0-9a-f]+$/i.test(body.operation_token_hash)) return errorResponse('invalid_operation_token_hash', 400);
       if (body.salt !== undefined && !(typeof body.salt === 'string' && body.salt.length <= 128)) return errorResponse('invalid_salt', 400);
       if (body.audit_public_key !== undefined && !(typeof body.audit_public_key === 'string' && body.audit_public_key.length <= 10000)) return errorResponse('invalid_key', 400);
-      if (body.kdf_version !== undefined && (body.kdf_version !== 1 && body.kdf_version !== 2)) return errorResponse('invalid_kdf_version', 400);
+      if (body.kdf_version !== undefined && (body.kdf_version !== 1 && body.kdf_version !== 2 && body.kdf_version !== 3)) return errorResponse('invalid_kdf_version', 400);
+      const newKdfVersion = body.kdf_version ?? 1;
+      const newSalt = typeof body.salt === 'string' ? body.salt : '';
+      // v3 binds a per-vault random salt into the KDF; without it the recipe is not v3.
+      if (newKdfVersion === 3 && !/^[0-9a-f]{32}$/i.test(newSalt)) return errorResponse('invalid_salt', 400);
 
       const verificationTokenHash = await hexSha256(body.verification_token);
       await env.DB.prepare(
-        `INSERT INTO config (id, verification_token, verification_token_hash, operation_token_hash, init_completed, kdf_version, salt, audit_public_key)
-         VALUES (?, '', ?, ?, 1, ?, ?, ?)
+        `INSERT INTO config (id, verification_token, verification_token_hash, operation_token_hash, init_completed, kdf_version, salt, audit_public_key, token_issued_at)
+         VALUES (?, '', ?, ?, 1, ?, ?, ?, ?)
          ON CONFLICT (id) DO UPDATE SET
            verification_token = '',
            verification_token_hash = excluded.verification_token_hash,
@@ -390,17 +401,68 @@ export default {
            init_completed = 1,
            kdf_version = excluded.kdf_version,
            salt = excluded.salt,
-           audit_public_key = excluded.audit_public_key`
+           audit_public_key = excluded.audit_public_key,
+           token_issued_at = excluded.token_issued_at`
       ).bind(
         'app_config',
         verificationTokenHash,
         body.operation_token_hash,
-        body.kdf_version ?? 1,
-        body.salt ?? '',
-        body.audit_public_key ?? ''
+        newKdfVersion,
+        newSalt,
+        body.audit_public_key ?? '',
+        Date.now()
       ).run();
 
       return jsonResponse({ status: 'ok' }, 201);
+    }
+
+    // POST /api/vault/upgrade — move an existing vault onto a salted KDF (v3)
+    // begin:  stage the salt, keep kdf_version so old clients keep working
+    // finish: flip to v3 with the tokens derived from the new master key
+    if (path === `${API_PREFIX}/vault/upgrade` && method === 'POST') {
+      const body = await parseJsonBody(request);
+      if (!body) return errorResponse('invalid_json', 400);
+      if (!validateString(body.operation_token, 128)) return errorResponse('invalid_token', 400);
+      const opRes = await checkOperationToken(env.DB, body.operation_token);
+      if (opRes) return opRes;
+      const cfg = await env.DB.prepare('SELECT init_completed, kdf_version, salt FROM config WHERE id = ?')
+        .bind('app_config').first<{ init_completed: number; kdf_version: number; salt: string }>();
+      if (!cfg || cfg.init_completed !== 1) return errorResponse('not_initialized', 404);
+      if (cfg.kdf_version >= 3) return errorResponse('already_upgraded', 409);
+
+      if (body.mode === 'begin') {
+        if (typeof body.salt !== 'string' || !/^[0-9a-f]{32}$/i.test(body.salt)) return errorResponse('invalid_salt', 400);
+        await env.DB.prepare('UPDATE config SET salt = ? WHERE id = ?').bind(body.salt, 'app_config').run();
+        return jsonResponse({ status: 'salt_staged' });
+      }
+
+      if (body.mode === 'finish') {
+        if (!cfg.salt) return errorResponse('salt_not_staged', 409);
+        if (!validateString(body.verification_token, 128) || !/^[0-9a-f]+$/i.test(body.verification_token)) return errorResponse('invalid_verification_token', 400);
+        if (!validateString(body.operation_token_hash, 128) || !/^[0-9a-f]+$/i.test(body.operation_token_hash)) return errorResponse('invalid_operation_token_hash', 400);
+        const vHash = await hexSha256(body.verification_token);
+        await env.DB.prepare(
+          "UPDATE config SET verification_token = '', verification_token_hash = ?, operation_token_hash = ?, kdf_version = 3, token_issued_at = ? WHERE id = ?"
+        ).bind(vHash, body.operation_token_hash, Date.now(), 'app_config').run();
+        return jsonResponse({ status: 'upgraded', kdf_version: 3 });
+      }
+
+      return errorResponse('invalid_mode', 400);
+    }
+
+    // POST /api/vault/rotate — renew the verification token's lifetime.
+    // Requires the operation token (MK-derived), so a stolen verification token
+    // alone can never extend its own validity.
+    if (path === `${API_PREFIX}/vault/rotate` && method === 'POST') {
+      const body = await parseJsonBody(request);
+      if (!body) return errorResponse('invalid_json', 400);
+      if (!validateString(body.operation_token, 128)) return errorResponse('invalid_token', 400);
+      const opRes = await checkOperationToken(env.DB, body.operation_token);
+      if (opRes) return opRes;
+      const issued = Date.now();
+      const upd = await env.DB.prepare('UPDATE config SET token_issued_at = ? WHERE id = ?').bind(issued, 'app_config').run();
+      if (upd.meta.changes === 0) return errorResponse('not_initialized', 404);
+      return jsonResponse({ status: 'rotated', token_issued_at: issued });
     }
 
     // GET /api/notes — list notes metadata
@@ -419,7 +481,7 @@ export default {
       // One statement so `total` and the page can never disagree; COUNT(*) OVER()
       // rides along with the page instead of a second COUNT query.
       const rows = await env.DB.prepare(
-        `SELECT id, encrypted_meta_packet, is_test, deleted, created_at, updated_at, COUNT(*) OVER() AS total FROM notes ${whereClause} ORDER BY id ASC LIMIT ? OFFSET ?`
+        `SELECT id, encrypted_meta_packet, is_test, deleted, created_at, updated_at, kdf_version, COUNT(*) OVER() AS total FROM notes ${whereClause} ORDER BY id ASC LIMIT ? OFFSET ?`
       ).bind(limit, offset).all<{
         id: number;
         encrypted_meta_packet: string;
@@ -427,6 +489,7 @@ export default {
         deleted: number;
         created_at: string;
         updated_at: string;
+        kdf_version: number;
         total: number;
       }>();
       const page = rows.results ?? [];
@@ -441,6 +504,7 @@ export default {
         deleted: r.deleted,
         created_at: r.created_at,
         updated_at: r.updated_at,
+        kdf_version: r.kdf_version,
       }));
       return jsonResponse({ notes, total, offset, limit });
     }
@@ -479,13 +543,14 @@ export default {
 
       const noteId = Number(noteMatch[1]);
       const row = await env.DB.prepare(
-        'SELECT id, encrypted_meta_packet, encrypted_body, created_at, updated_at, deleted FROM notes WHERE id = ? AND is_test != 1'
-      ).bind(noteId).first<{ id: number; encrypted_meta_packet: string; encrypted_body: string; deleted: number }>();
-      if (!row || row.deleted === 1) return errorResponse('not_found', 404);
+        'SELECT id, encrypted_meta_packet, encrypted_body, created_at, updated_at, deleted, kdf_version FROM notes WHERE id = ? AND is_test != 1'
+      ).bind(noteId).first<{ id: number; encrypted_meta_packet: string; encrypted_body: string; deleted: number; kdf_version: number }>();
+      if (!row || (row.deleted === 1 && url.searchParams.get('deleted') !== '1')) return errorResponse('not_found', 404);
       return jsonResponse({
         id: row.id,
         encrypted_meta_packet: row.encrypted_meta_packet,
         encrypted_body: row.encrypted_body,
+        kdf_version: row.kdf_version,
       });
     }
 
@@ -504,18 +569,21 @@ export default {
       if (body.is_test !== undefined && (typeof body.is_test !== 'number' || !Number.isInteger(body.is_test) || (body.is_test !== 0 && body.is_test !== 1))) return errorResponse('invalid_is_test', 400);
       if (body.created_at !== undefined && !validateString(body.created_at, 64)) return errorResponse('invalid_created_at', 400);
       if (body.updated_at !== undefined && !validateString(body.updated_at, 64)) return errorResponse('invalid_updated_at', 400);
+      if (body.kdf_version !== undefined && (typeof body.kdf_version !== 'number' || !Number.isInteger(body.kdf_version) || body.kdf_version < 0 || body.kdf_version > 3)) return errorResponse('invalid_kdf_version', 400);
       const ip = await getClientIp(request);
       const rl = await writeRateLimit(env.DB, 'write:' + ip);
       if (rl) return rl;
       const result = await env.DB.prepare(
         "UPDATE notes SET encrypted_meta_packet = ?, encrypted_body = ?, updated_at = COALESCE(?, datetime('now'))" +
         (body.created_at !== undefined ? ", created_at = ?" : "") +
-        (body.is_test !== undefined ? ", is_test = ?" : "") + " WHERE id = ?"
+        (body.is_test !== undefined ? ", is_test = ?" : "") +
+        (body.kdf_version !== undefined ? ", kdf_version = ?" : "") + " WHERE id = ?"
       ).bind(
         body.encrypted_meta_packet, body.encrypted_body,
         body.updated_at !== undefined ? body.updated_at : null,
         ...(body.created_at !== undefined ? [body.created_at] : []),
         ...(body.is_test !== undefined ? [body.is_test as number] : []),
+        ...(body.kdf_version !== undefined ? [body.kdf_version as number] : []),
         noteId
       ).run();
       if (result.meta.changes === 0) return errorResponse('not_found', 404);

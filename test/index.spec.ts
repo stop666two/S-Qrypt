@@ -432,6 +432,50 @@ describe('S-Qrypt v1.0.0 API', () => {
     expect(beyond.data.total).toBe(first.data.total);
   });
 
+  it('rejects cross-site requests that omit Origin/Referer (P2)', async () => {
+    const crossSite = await jsonFetch('/api/note', {
+      method: 'POST',
+      headers: { 'Sec-Fetch-Site': 'cross-site' },
+      body: JSON.stringify({ operation_token: TEST_TOKEN }),
+    });
+    expect(crossSite.status).toBe(403);
+    expect(crossSite.data.error).toBe('forbidden_origin');
+
+    const sameSite = await jsonFetch('/api/note', {
+      method: 'POST',
+      headers: { 'Sec-Fetch-Site': 'same-origin' },
+      body: JSON.stringify({ operation_token: TEST_TOKEN }),
+    });
+    expect(sameSite.status).toBe(201);
+  });
+
+  it('expires and rotates the verification token (P4)', async () => {
+    const vt = { 'X-Verification-Token': 'af3f8e6d9a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f' };
+    await env.DB.exec("UPDATE config SET token_issued_at = 1 WHERE id = 'app_config'");
+
+    const expired = await jsonFetch('/api/notes', { headers: vt });
+    expect(expired.status).toBe(401);
+    expect(expired.data.error).toBe('token_expired');
+
+    // Rotating needs the MK-derived operation token, not the verification token.
+    const noProof = await jsonFetch('/api/vault/rotate', {
+      method: 'POST',
+      body: JSON.stringify({ operation_token: 'wrong' }),
+    });
+    expect(noProof.status).toBe(403);
+
+    const rotated = await jsonFetch('/api/vault/rotate', {
+      method: 'POST',
+      body: JSON.stringify({ operation_token: TEST_TOKEN }),
+    });
+    expect(rotated.status).toBe(200);
+    expect(rotated.data.token_issued_at).toBeGreaterThan(1);
+    expect((await jsonFetch('/api/token')).data.token_issued_at).toBe(rotated.data.token_issued_at);
+
+    const renewed = await jsonFetch('/api/notes', { headers: vt });
+    expect(renewed.status).toBe(200);
+  });
+
   it('does not throttle a 20-note import at 40 writes (R-03)', { timeout: 60000 }, async () => {
     const statuses: number[] = [];
     for (let i = 0; i < 20; i++) {
@@ -454,9 +498,10 @@ describe('S-Qrypt v1.0.0 API', () => {
     expect(statuses.every((s) => s === 200 || s === 201)).toBe(true);
   });
 
-  it('throttles repeated failed authentication (R-04)', { timeout: 60000 }, async () => {
+  it('throttles repeated failed authentication (R-04)', { timeout: 180000 }, async () => {
     const counts: Record<number, number> = {};
-    for (let i = 0; i < 120; i++) {
+    // 105 crosses the 100-per-window cap with as few D1 writes as possible.
+    for (let i = 0; i < 105; i++) {
       const { status } = await jsonFetch('/api/notes', {
         headers: { 'X-Verification-Token': 'wrong' + i },
       });
@@ -464,5 +509,55 @@ describe('S-Qrypt v1.0.0 API', () => {
     }
     expect(counts[401]).toBeGreaterThan(0);
     expect(counts[429]).toBeGreaterThan(0);
+    // Later assertions need the bucket clear again.
+    await env.DB.exec('DELETE FROM auth_limits');
+  });
+
+  it('upgrades a v2 vault to a salted v3 KDF (P1)', async () => {
+    const bad = await jsonFetch('/api/vault/upgrade', {
+      method: 'POST',
+      body: JSON.stringify({ mode: 'begin', operation_token: TEST_TOKEN, salt: 'abc' }),
+    });
+    expect(bad.status).toBe(400);
+    expect(bad.data.error).toBe('invalid_salt');
+
+    const salt = 'a1b2c3d4e5f60718293a4b5c6d7e8f90';
+    const begin = await jsonFetch('/api/vault/upgrade', {
+      method: 'POST',
+      body: JSON.stringify({ mode: 'begin', operation_token: TEST_TOKEN, salt }),
+    });
+    expect(begin.status).toBe(200);
+    expect(begin.data.status).toBe('salt_staged');
+    expect((await jsonFetch('/api/token')).data.salt).toBe(salt);
+    // Staging the salt must not change the derivation yet.
+    expect((await jsonFetch('/api/init-check')).data.kdf_version).toBe(2);
+
+    const finish = await jsonFetch('/api/vault/upgrade', {
+      method: 'POST',
+      body: JSON.stringify({
+        mode: 'finish',
+        operation_token: TEST_TOKEN,
+        verification_token: 'c'.repeat(64),
+        operation_token_hash: 'd'.repeat(64),
+      }),
+    });
+    expect(finish.status).toBe(200);
+    expect(finish.data.kdf_version).toBe(3);
+    expect((await jsonFetch('/api/init-check')).data.kdf_version).toBe(3);
+
+    const oldToken = await jsonFetch('/api/notes', {
+      headers: { 'X-Verification-Token': 'af3f8e6d9a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f' },
+    });
+    expect(oldToken.status).toBe(401);
+    const newToken = await jsonFetch('/api/notes', {
+      headers: { 'X-Verification-Token': 'c'.repeat(64) },
+    });
+    expect(newToken.status).toBe(200);
+
+    const staleOpToken = await jsonFetch('/api/vault/upgrade', {
+      method: 'POST',
+      body: JSON.stringify({ mode: 'begin', operation_token: TEST_TOKEN, salt }),
+    });
+    expect(staleOpToken.status).toBe(403);
   });
 });

@@ -152,6 +152,7 @@ input,textarea,button,select{font-family:inherit;font-size:inherit}
 <input type="password" id="init-password" placeholder="输入主密码" autocomplete="new-password" spellcheck="false">
 <input type="password" id="init-password-confirm" placeholder="再次输入主密码" autocomplete="new-password" spellcheck="false">
 <input type="password" id="init-setup-token" placeholder="部署时配置的 SETUP_TOKEN（初始化密钥）" autocomplete="new-password" spellcheck="false">
+<label style="display:flex;gap:8px;align-items:flex-start;text-align:left;font-size:12px;color:var(--text2);margin-bottom:12px"><input type="checkbox" id="init-legacy" style="width:auto;margin:2px 0 0"><span>旧版本保险箱（v1/v2）：按无盐派生初始化，登录后会自动提示升级到 v3</span></label>
 <textarea id="init-public-key" placeholder='RSA 公钥 PEM（2048/4096 位，审计日志加密用）&#10;如何生成: openssl genpkey -algorithm RSA -out private.pem -pkeyopt rsa_keygen_bits:4096&#10;openssl pkey -in private.pem -pubout -out public.pem&#10;然后将 public.pem 内容粘贴到此处' style="width:100%;height:95px;padding:8px 12px;background:var(--surface2);border:1px solid var(--border);border-radius:var(--radius);color:var(--text);outline:none;font-size:11px;font-family:monospace;margin-bottom:12px;resize:none"></textarea>
 <button id="init-btn">创建保险箱</button>
 <div class="error" id="init-error"></div>
