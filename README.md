@@ -17,6 +17,8 @@ S-Qrypt 是一个严格零信任、后量子安全的加密笔记保险箱，专
 - [特性概览](#特性概览)
 - [安全架构](#安全架构)
 - [快速部署](#快速部署)
+- [生产迁移 Runbook](#生产迁移-runbook)
+- [升级说明](#升级说明从-v101-或旧派生版本)
 - [本地开发](#本地开发)
 - [临时启动（一键试用）](#临时启动一键试用)
 - [API 文档](#api-文档)
@@ -190,6 +192,131 @@ npx wrangler d1 execute s-qrypt-db --remote \
 - 初始化密码强度：≥12 位；或 ≥10 位且含大小写/数字/符号中的 3 类；拒绝常见口令与全同字符
 - 源校验：缺少 Origin/Referer 时按 `Sec-Fetch-Site` 判断，cross-site 直接 403
 - 脚本 CSP 不再需要 `'unsafe-inline'`；补 `base-uri 'none'`、`form-action 'none'`
+
+---
+
+## 生产迁移 Runbook
+
+从 v1.0.x 迁到 **v1.5.0** 的可重复流程：备份 → 部署 → 首次解锁 → 验收 → 回滚。理论说明见 **[docs/MIGRATION.md](docs/MIGRATION.md)**，这里只写「按顺序敲什么、看到什么算成功」。
+
+> 2026-11-21 的生产迁移就是照这份跑完的（v1.0.1 → v1.5.0，6 条笔记零丢失），下面的命令与预期输出都来自那次实测。
+
+### 步骤 0｜拿到可读的明文备份（不可跳过）
+
+用**旧站点**打开 → 顶部「备份」→ 得到 `{exported_at, total, notes[]}` 的 JSON。先核对：
+
+```bash
+python -c "import json,sys;d=json.load(open(sys.argv[1],encoding='utf-8'));print(d['total'],len(d['notes']));[print('-',n['title'][:30],len(n['body'])) for n in d['notes']]" <备份文件>
+```
+
+条数、标题、正文长度对得上再往下走。**v3 升级后旧客户端再也解不开**，这份明文是唯一不依赖派生口径的救命件。
+
+### 步骤 1｜留一份密文快照 + 记录回滚点
+
+```bash
+mkdir -p _tmp_backup
+npx wrangler d1 export s-qrypt-db --remote --output _tmp_backup/d1-$(date +%Y%m%d).sql
+npx wrangler deployments status --name s-qrypt     # 记下当前 Version ID
+```
+
+`_tmp_*` 已在 `.gitignore` 里，不会误提交。
+
+### 步骤 2｜部署
+
+```bash
+npm run deploy      # check-clean → tsc → 混淆 → wrangler deploy → 必定还原源码
+```
+
+验收（三条都要对）：
+
+```bash
+U=https://<你的域名>
+curl -sI $U/ | grep -iE "content-security-policy|x-frame-options"   # 应有 frame-ancestors 'none'，script-src 无 'unsafe-inline'
+curl -s $U/ | grep -o 'id="boot-screen" class="[^"]*"'              # 启动门禁
+curl -s -o /dev/null -w "%{http_code}\n" $U/app.js                  # 200
+```
+
+### 步骤 3｜首次解锁：三种结果，分别怎么走
+
+| 现象 | 含义 | 处理 |
+|---|---|---|
+| 直接进入，笔记可读 | 令牌方案兼容 | 接受「升级到 v3」→ 完成 |
+| 「密码错误」 | 旧库令牌是 `sha256(salt‖sha224(pw))` | 见「步骤 4 重置」 |
+| 进入但笔记 `[无法解密]` + 顶部横幅 | 旧主密钥**含 staged salt**，无盐派生永远对不上 | 见「步骤 5 离线恢复」 |
+
+### 步骤 4｜重置（令牌不兼容时）
+
+```bash
+npx wrangler d1 execute s-qrypt-db --remote --command "DELETE FROM config WHERE id = 'app_config'"
+```
+
+然后在网站初始化：**同一密码**、按情况勾选「旧版本保险箱」、填 `SETUP_TOKEN`。若弹「检测到既有笔记，但配置不存在」→ 点**确认**（会带 `force` 重试；笔记不删）。
+
+### 步骤 5｜离线恢复（旧主密钥含盐时）
+
+新版无法复现旧主密钥，必须用**旧 bundle** 解一次：
+
+```bash
+# 1. 取回部署前的旧 bundle（multipart 响应，需解包出 index.js）
+TOKEN=$(grep -E "^oauth_token" ~/.wrangler/config/default.toml | sed 's/.*= *"\(.*\)"/\1/')
+curl -s -H "Authorization: Bearer $TOKEN" \
+  "https://api.cloudflare.com/client/v4/accounts/<ACCOUNT_ID>/workers/scripts/s-qrypt" \
+  -o _tmp_backup/live-script.bin
+
+# 2. 把密文快照导入本地 D1，用旧 bundle 起一个只监听本机的实例
+npx wrangler d1 execute s-qrypt-db --local --persist-to .wrangler/rs13 --file _tmp_backup/d1-XXXX.sql
+npx wrangler dev --config _tmp_oldrun/wrangler.jsonc --port 8801 --ip 127.0.0.1 --persist-to .wrangler/rs13
+```
+
+浏览器打开 `http://127.0.0.1:8801`，用**原密码**登录 → 「备份」导出明文 → 回到生产站走「步骤 4 → 导入」。
+
+### 步骤 6｜验收（逐条打勾）
+
+```bash
+npx wrangler d1 execute s-qrypt-db --remote --command \
+  "SELECT kdf_version,length(salt) AS saltlen,kdf_mb,kdf_ro FROM config"
+# 期望：kdf_version=3, saltlen=32, kdf_mb=32, kdf_ro=128
+
+npx wrangler d1 execute s-qrypt-db --remote --command \
+  "SELECT is_test,deleted,kdf_version,COUNT(*) AS n FROM notes GROUP BY is_test,deleted,kdf_version"
+# 期望：真实笔记 is_test=0,deleted=0,kdf_version=3 且条数等于备份条数
+```
+
+- [ ] 列表中条数与明文备份一致，标题逐条对得上
+- [ ] 无 `[无法解密]`、无顶部横幅
+- [ ] **换一台设备/浏览器**用同一密码能解锁（证明参数绑定生效）
+- [ ] 再导出一次备份，与步骤 0 的 JSON 逐条比对
+
+### 本次实测记录（2026-11-21）
+
+| 项 | 实际情况 | 走的路径 |
+|---|---|---|
+| 起点 | v1.0.1，旧库 `kdf_version=2` + 已落但未启用的 `salt`，6 条真实笔记 | — |
+| 令牌 | 旧方案 `sha256(salt ‖ sha224(pw))` | 新版报「密码错误」→ 步骤 4 |
+| 主密钥 | 旧 MK **含** staged salt | 无盐派生的笔记全部 `[无法解密]` → 步骤 5 离线导出 |
+| 恢复 | 明文备份 6/6 条导入，保留原时间戳 | 步骤 4 → 导入 |
+| 结果 | `kdf_version=3`、`salt` 32、`kdf_mb=32`/`kdf_ro=128` 已绑定 | 步骤 6 断言全绿 |
+| 换设备 | **手机端用同一密码解锁正常** | 证明参数绑定生效，不再依赖本机核数 |
+| 版本 | v1.5.0 | — |
+
+### 步骤 7｜回滚
+
+```bash
+npx wrangler rollback --name s-qrypt              # 回到上一个版本
+# 或指定版本：
+npx wrangler versions deploy <OLD_VERSION_ID> --name s-qrypt
+```
+
+数据回滚只能靠步骤 1 的密文快照，且**必须是当时那套配方**（salt + 参数 + 密码）才读得出来；配方变了就只剩明文备份一条路。所以顺序永远是：先明文，再密文，最后才动代码。
+
+| 症状 | 处置 |
+|---|---|
+| 409 `already_initialized` | 已初始化；要重建先 `DELETE FROM config` |
+| 409 `orphan_notes` | 有笔记无配置；初始化页确认后带 `force` 重试 |
+| 409 `placeholder_exists` | 引导期占位上限或旧实现遗留（v1.5.0 已改为只数 `is_test` 行，上限 20） |
+| 503 `setup_token_not_configured` | `npx wrangler secret put SETUP_TOKEN --name s-qrypt` |
+| 403 `invalid_setup_token` | 填错；值不可读，直接重设 |
+| 登录 12s 后 `timeout` | 网络挂起；读请求自动重试一次，写请求重新保存 |
 
 ---
 
