@@ -298,7 +298,7 @@ $ grep -n "run:" .github/workflows/deploy.yml
 | R-11 | 已修 | `migrations/0001_init.sql` 按运行时 DDL 重写 |
 | R-12 | 已修 | `setup.mjs` 记录运行前的 `database_id` 并在结束时还原该值 |
 | R-13 | 已修 | 新增 `scripts/deploy.mjs`（try/finally 还原源码），`setup.mjs` 部署亦加 finally |
-| R-14 | 部分收敛 | 删除恒等 Trusted Types 策略；CSP 仍保留 `'unsafe-inline'`（内联脚本未外链化），残余风险记录在此 |
+| R-14 | 已修 | 删除恒等 Trusted Types 策略；SPA 脚本外链为 `/app.js`（`src/app.client.txt`），`script-src` 去掉 `'unsafe-inline'`；浏览器实测 DOM 内联脚本数为 0、控制台零 CSP 违规 |
 | R-15 | 已修 | `lockScr` 清空详情/编辑器/列表 DOM |
 | R-16 | 已修 | 损坏行渲染为 `[数据损坏]`；失败项按 `rows[i]` 对应真实 id |
 | R-17 | 已修 | `/api/audit/log` 要求 `operation_token`，前端已同步 |
@@ -307,7 +307,7 @@ $ grep -n "run:" .github/workflows/deploy.yml
 | R-20 | 已修 | 删除 `deriveKC`/`intSign` 与 `[KC:...]` 日志；本地审计不再显示无法校验的 ✓ |
 | R-21 | 已修 | 单条读加 `AND is_test != 1` |
 | R-22 | 已修 | 列表只派生 KA（KB 懒派生）；审查阶段实测三键合计 20 ms/条，本次未重测只派生 KA 的耗时 |
-| R-25 | 保持 | 仍为 `total` + `notes` 两次查询（PLAUSIBLE，未观察到错序） |
+| R-25 | 已修 | `/api/notes` 用 `COUNT(*) OVER()` 与分页同一语句返回 total，越界页回退为单独 COUNT；新增总数一致性断言 |
 | R-26 | 已修 | 新增 `appState.srvOffset`，「加载更多」与服务端行位置解耦 |
 | R-27 | 已修 | 未初始化时仅允许 1 条占位笔记，第 2 次返回 409 `placeholder_exists` |
 | R-28 | 已修 | 删除 `/sw.js` 路由与 `serviceWorker.register`；README 的 PWA 宣称改为仅 Manifest |
