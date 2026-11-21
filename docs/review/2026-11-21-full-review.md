@@ -351,6 +351,17 @@ $ grep -n "run:" .github/workflows/deploy.yml
 | R-31 | 高危 | 服务端返回 0 条就渲染「保险箱是空的」 | 读副本滞后/抖动 → 列表清空 → 用户误以为数据丢失并可能去"重置" | 已修 | 浏览器实测：本地有 2 条时让 `/api/notes?offset=0` 返回空 → 保留 2 条、`emptyMode=suspect`、空态不叠加显示、1.2s 后静默重试 |
 | R-32 | 一般 | 重置后用不同密码初始化，旧笔记只显示「数据损坏」 | 重置 → 新密码初始化 → 解锁成功但旧笔记全废，界面无任何处置指引 | 已修 | 浏览器实测：破坏 1 条密文 → 顶部横幅「有 1 条笔记用当前密码解不开」+ 用旧密码重来/重置命令两条出路；删除该行后横幅自动隐藏；行标签改为「无法解密」 |
 
+### R-33 CI 工作流从未执行（新发现，已修）
+
+| 字段 | 内容 |
+|---|---|
+| 严重度 | 高危（门禁与自动部署链路整体失效，且长期无声） |
+| 位置 | `.github/workflows/deploy.yml` 基线版三处 `if: ${{ secrets.… }}`（step 级） |
+| 机制 | `secrets` 上下文在 `if` 中不可用 → GitHub 解析期即拒绝整个文件（`Unrecognized named-value: 'secrets'`）→ run 不创建任何 job |
+| 证据 | `gh run view 44853576423`：「This run likely failed because of a workflow file issue」；`/actions/runs/<id>/jobs` 返回 `total_count: 0`、无日志；2026-08-20 起 main 上每个 run 同为 0 job 失败 |
+| 影响 | 附录 E 中「CI 增加 `tsc --noEmit` 与 `vitest run`」从未真实执行；R-06 的部署链路也从未自动跑过（本地流水线不受影响） |
+| 修复 | 拆成 `test`（push：`npm ci → check:docs → tsc → vitest`）与 `deploy`（`workflow_dispatch` 显式触发）；secrets 只出现在 `env`；`.gitattributes` 为 `*.yml` 指定 LF。修复推送后新的 run 真实创建并执行 `test` 作业 |
+
 ### 本轮仍未验证
 
 5. R-29 的「旧库阶梯恢复」是在同一台机器上**覆盖 `navigator` 属性**模拟的，未在真实低配设备/真实手机浏览器上复现。

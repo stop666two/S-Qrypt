@@ -115,11 +115,12 @@ npm run setup
 
 > ⚠️ **初始化保护**：`POST /api/init` 受环境变量 `SETUP_TOKEN` 保护。部署后必须执行 `npx wrangler secret put SETUP_TOKEN`（或在 Cloudflare Dashboard → Workers → 对应 Worker → Settings → Variables 中添加 secret），否则初始化接口将返回 503 `setup_token_not_configured`，无法完成初始化。
 
-### ⚡ GitHub Actions 自动部署
+### ⚡ GitHub Actions
 
-顶部徽章 → GitHub **Actions** → **Run workflow** 触发部署。
+- **push 到 main**：跑门禁 `npm ci → check:docs → tsc --noEmit → vitest run`（不部署）
+- **部署**：GitHub **Actions** → 左侧 `CI` → **Run workflow** 显式触发；需要 `CLOUDFLARE_API_TOKEN`（可选 `CLOUDFLARE_ACCOUNT_ID`、`CF_SETUP_TOKEN`），未配置时部署步骤跳过并打印提示
 
-> 可选：在 Settings → Secrets → Actions 添加 `CLOUDFLARE_API_TOKEN` 后自动部署。
+> 为什么 push 不自动部署：GitHub 不允许在 `if:` 里引用 `secrets`（解析期即报 `Unrecognized named-value`，整个 workflow 不创建任何 job）。需要「有 token 就自动部署」时，把 `deploy` 作业的 `if` 改成 `github.event_name == 'push'` 并接受 push 即发布。
 
 ### 手动部署
 
@@ -425,7 +426,7 @@ s-qrypt/
 │   └── env.d.ts                # 测试环境类型
 ├── vitest.config.ts            # Vitest 配置 (workers pool + SETUP_TOKEN)
 ├── .github/workflows/
-│   └── deploy.yml              # GitHub Actions（npm ci → tsc → vitest → 部署）
+│   └── deploy.yml              # GitHub Actions（push 跑门禁；部署需 Run workflow）
 ├── dev-temp.bat                # 一键临时启动（薄壳，逻辑在 scripts/dev-temp.mjs）
 ├── wrangler.jsonc              # Cloudflare Workers 配置
 ├── worker-configuration.d.ts   # Worker 类型声明

@@ -67,6 +67,7 @@
 
 ### Fixed
 
+- **CI 从未真正执行**：`.github/workflows/deploy.yml` 在三处 `if:` 里引用 `secrets`，GitHub 解析期即拒绝（`Unrecognized named-value: 'secrets'`），所有 run 都是 0 job 的失败（自 2026-08-20 起）。改为 `test`（push 跑门禁）与 `deploy`（`workflow_dispatch` 显式触发）两个作业，secrets 只出现在 `env` 中；`.gitattributes` 为 `*.yml` 指定 LF
 - **安全（HIGH 12 项）**
   - deploy 脚本回滚范围限定为混淆器修改的两个源文件，不再 `git checkout -- src/` 整体回滚
   - obfuscate.mjs 混淆输出三重验证（非空 / 与输入不同 / node --check），失败即终止，不再静默降级
