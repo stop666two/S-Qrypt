@@ -51,6 +51,10 @@ button{cursor:pointer;background:none;border:none}
 /* ---------- auth ---------- */
 .screen{position:fixed;inset:0;z-index:1000;display:flex;align-items:center;justify-content:center;padding:24px;background:var(--bg)}
 .screen.hidden{display:none}
+.boot-box{text-align:center}
+.spinner{width:20px;height:20px;margin:18px auto 0;border-radius:50%;border:2px solid var(--surface3);border-top-color:var(--accent);animation:sq-spin .9s linear infinite}
+@keyframes sq-spin{to{transform:rotate(360deg)}}
+@media (prefers-reduced-motion: reduce){.spinner{animation-duration:2.4s}}
 .box{
   width:436px;max-width:100%;padding:38px 34px 30px;
   background:var(--surface);border-radius:var(--r-lg);box-shadow:var(--shadow);
@@ -353,7 +357,14 @@ button{cursor:pointer;background:none;border:none}
 </head>
 <body>
 <div id="app">
-<div id="lock-screen" class="screen">
+<div id="boot-screen" class="screen">
+<div class="box boot-box">
+<h1>S-Qrypt</h1>
+<p id="boot-text">正在检查保险库状态…</p>
+<div class="spinner" aria-hidden="true"></div>
+</div>
+</div>
+<div id="lock-screen" class="screen hidden">
 <div class="box">
 <h1>S-Qrypt</h1>
 <p>后量子安全加密笔记 · 请输入主密码</p>
@@ -365,7 +376,7 @@ button{cursor:pointer;background:none;border:none}
 <div class="progress-text" id="login-progress-text"></div>
 </div>
 </div>
-<div id="init-screen" class="screen">
+<div id="init-screen" class="screen hidden">
 <div class="box">
 <h1>初始化保险箱</h1>
 <p>设置主密码以创建加密笔记保险箱</p>
