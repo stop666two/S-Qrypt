@@ -20,12 +20,15 @@ S-Qrypt 是一个严格零信任、后量子安全的加密笔记保险箱，专
 - [快速部署](#快速部署)
 - [生产迁移 Runbook](#生产迁移-runbook)
 - [升级说明](#升级说明从-v101-或旧派生版本)
+- [已知限制与注意事项](#已知限制与注意事项)
 - [本地开发](#本地开发)
 - [临时启动（一键试用）](#临时启动一键试用)
 - [API 文档](#api-文档)
 - [项目结构](#项目结构)
+- [技术细节](#技术细节)
 - [技术栈](#技术栈)
 - [许可证](#许可证)
+- [常见问题](#常见问题)
 
 ---
 
@@ -258,16 +261,40 @@ npx wrangler d1 execute s-qrypt-db --remote --command "DELETE FROM config WHERE 
 新版无法复现旧主密钥，必须用**旧 bundle** 解一次：
 
 ```bash
-# 1. 取回部署前的旧 bundle（multipart 响应，需解包出 index.js）
+# 0. 拿 Account ID（whoami 表格里）
+npx wrangler whoami
+
+# 1. 取回部署前的旧 bundle（API 返回 multipart，需要解包出 index.js）
 TOKEN=$(grep -E "^oauth_token" ~/.wrangler/config/default.toml | sed 's/.*= *"\(.*\)"/\1/')
 curl -s -H "Authorization: Bearer $TOKEN" \
   "https://api.cloudflare.com/client/v4/accounts/<ACCOUNT_ID>/workers/scripts/s-qrypt" \
   -o _tmp_backup/live-script.bin
+mkdir -p _tmp_oldrun
+python - <<'PX'
+raw = open('_tmp_backup/live-script.bin', 'rb').read()
+b = raw.split(b'\r\n', 1)[0]
+for part in raw.split(b):
+    if b'name="index.js"' in part:
+        open('_tmp_oldrun/index.js', 'wb').write(part.split(b'\r\n\r\n', 1)[1].rstrip(b'\r\n'))
+PX
 
-# 2. 把密文快照导入本地 D1，用旧 bundle 起一个只监听本机的实例
+# 2. 把密文快照导入本地 D1，并用旧 bundle 起一个只监听本机的实例
 npx wrangler d1 execute s-qrypt-db --local --persist-to .wrangler/rs13 --file _tmp_backup/d1-XXXX.sql
+cat > _tmp_oldrun/wrangler.jsonc <<'PXJSON'
+{
+  "name": "s-qrypt-old-recover",
+  "main": "index.js",
+  "compatibility_date": "2026-07-10",
+  "compatibility_flags": ["nodejs_compat"],
+  "d1_databases": [
+    { "binding": "DB", "database_name": "s-qrypt-db", "database_id": "<database_id>" }
+  ]
+}
+PXJSON
 npx wrangler dev --config _tmp_oldrun/wrangler.jsonc --port 8801 --ip 127.0.0.1 --persist-to .wrangler/rs13
 ```
+
+> 该实例只监听 `127.0.0.1`，公网不可达；读的是本地导入的快照，**不连生产 D1**，所以旧版本的安全缺陷不会被暴露到公网。
 
 浏览器打开 `http://127.0.0.1:8801`，用**原密码**登录 → 「备份」导出明文 → 回到生产站走「步骤 4 → 导入」。
 
@@ -318,6 +345,23 @@ npx wrangler versions deploy <OLD_VERSION_ID> --name s-qrypt
 | 503 `setup_token_not_configured` | `npx wrangler secret put SETUP_TOKEN --name s-qrypt` |
 | 403 `invalid_setup_token` | 填错；值不可读，直接重设 |
 | 登录 12s 后 `timeout` | 网络挂起；读请求自动重试一次，写请求重新保存 |
+
+---
+
+## 已知限制与注意事项
+
+不是缺陷清单，是「用之前应该知道」的口径；与审查报告附录 F 的未验证项互补。
+
+| 项 | 说明 |
+|---|---|
+| 旧库密钥含盐时无法原地升级 | 早期版本把 staged `salt` 混进了主密钥，新版无法复现。此时必须「旧 bundle 导出明文 → 重新初始化 → 导入」（见 Runbook 步骤 5）。本次生产迁移正是这种情况 |
+| 未绑定参数的旧库首次登录会多派生 | 按「硬件估算 → 32/128 → 24/80 → 16/60」逐个尝试，命中即停；最多多 2 次派生（约 +1.4s），并写审计 `kdf_params_recovered` |
+| 解锁成本 | 桌面约 **0.7s**（Argon2id 277ms + 32MB 内存硬混淆 + 128 轮 + 原生 SHA-256 Merkle）；低端手机可能 2–3s。这些参数**进入主密钥**，不能为了快而调低，否则等同于换钥匙 |
+| 测试笔记会累积 | 每次初始化写一条 `is_test=1` 占位笔记，界面与升级流程都跳过它；不影响使用，也不进列表/备份 |
+| 没有 UI 级「重置保险箱」 | 重置 = 删 `config` 行 + 重新初始化（Runbook 步骤 4）。有意为之：删配置需要 D1 权限 |
+| 解不开的行只能删 | `[无法解密]` 条目按设计不提供「编辑」（拿不到明文），只提供删除 |
+| 单保险箱设计 | 一个 D1 对应一个 `config`，不支持多用户/多保险箱共用实例 |
+| 仍未实测 | 全局失败桶命中、审计链断裂提示、令牌 90 天真实边界（详见 `docs/review/2026-11-21-full-review.md` 附录 F） |
 
 ---
 
@@ -599,6 +643,15 @@ A: 不能。零信任设计不存在后门，密码是唯一凭证。
 
 **Q: 数据会丢失吗？**
 A: 不会。所有数据存储在 Cloudflare D1 数据库中，即使重新部署也不会丢失。
+
+**Q: 解锁为什么不是"秒开"？**
+A: 主密钥派生包含 Argon2id（32MiB / t=3 / p=4）与 32MB 内存硬混淆，桌面约 0.7s、低端手机 2–3s。这些参数**进入了主密钥**，调低等于换一把钥匙（既有笔记会立刻解不开），所以速度上限由配方决定，不是没优化。启动阶段现在走加载门禁，不会先闪一屏再跳。
+
+**Q: 换了设备/浏览器提示"密码错误"？**
+A: 早期版本的派生参数取自 `navigator.hardwareConcurrency/deviceMemory`，换设备就等于换钥匙；当前版本把 `kdf_mb/kdf_ro` 绑定在服务端并随 `/api/token` 下发。**未绑定参数的旧库**首次登录会依次尝试 `硬件估算 → 32/128 → 24/80 → 16/60`，最多多两次派生（约 +1.4s），命中后会写审计 `kdf_params_recovered`。若全部不匹配，只能按 Runbook 步骤 5 用旧 bundle 离线导出。
+
+**Q: 迁移后列表出现「无法解密」的条目？**
+A: 说明这批密文是用**旧的、含 salt 的主密钥**加密的，与当前初始化用的密码/盐不是同一套。处置只有两条：用原始密码重新初始化（Runbook 步骤 4），或从明文备份重新导入（步骤 5）。条目右侧的「删除」可以清掉它们，`[无法解密]` 行按设计不提供「编辑」。
 
 **Q: 支持多设备同步吗？**
 A: 支持。只要使用同一密码，在任何设备上访问同一 Worker URL 即可看到所有笔记。

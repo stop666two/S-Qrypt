@@ -9,7 +9,7 @@
 
 相关但不在本目录的文档：
 
-- `README.md`：部署、API、安全架构、升级说明、本地/临时启动。
+- `README.md`：部署、API、安全架构、**生产迁移 Runbook**、升级说明、**已知限制与注意事项**、本地/临时启动。
 - `CHANGELOG.md`：用户可见变化与升级注意。
 - `scripts/check-docs.mjs`（`npm run check:docs`）：README 与代码的一致性守卫，CI 会跑。
 - `AGENTS.md`：规则集指针（正文在全局 `agents-rules` skill，项目内不留副本）。

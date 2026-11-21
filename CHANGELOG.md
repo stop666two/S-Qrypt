@@ -46,6 +46,9 @@
 
 ### Changed
 
+- **解锁提速 38%**（本机实测 1167ms → 724ms）：Merkle 摘要改用 `crypto.subtle.digest`（FIPS 输出与自实现逐字节一致），`randD` 随机延迟 80–150ms → 20–50ms。同一 (密码, salt, 参数) 派生的 MK 修改前后完全相同，既有保险箱零迁移
+- 版本号统一 **1.5.0**：`package.json`、`package-lock` 顶层、页面标题、客户端文件头、初始化自检笔记正文；CHANGELOG 的 Unreleased 归档为 `[1.5.0] - 2026-11-21`
+- README 新增「生产迁移 Runbook」「已知限制与注意事项」两节与 CI 状态徽章；`docs/MIGRATION.md` 与 Runbook 互链
 - **SHA-256/SHA-224 重写为标准 FIPS 180-4 实现**（根因：JS `>>> 32` 取模 32 导致长度高位错误）。⚠️ 破坏性变更：旧实现派生的密钥与旧保险箱不兼容，旧保险箱无法登录/解密（已确认接受）
 - 密码最小长度从 4 提升至 10（初始化与文案同步）
 - verification_token 改为服务端仅存 SHA-256 哈希；旧库明文 token 首次校验成功后自动回填哈希并清空明文
@@ -71,6 +74,12 @@
 - `PRIMARY_READ`（SQL 注释不会让 D1 读主库；启用读复制需 Sessions API）
 
 ### Fixed
+
+- **启动闪屏**：`#lock-screen` 与 `#init-screen` 首帧同时可见（后者在 DOM 中靠后），用户先看到「初始化保险箱」再被切成「输入密码」。新增 `#boot-screen` 加载门禁，两屏默认 `hidden`，`checkInit` 的断网/DB 不可用/未初始化/已初始化四个分支各自收口，并自动聚焦解锁输入框
+- **确认框点不到（两轮根因）**：`#confirm-dialog` 原为 `z-index:800`，低于整屏 `.screen:1000`（初始化页内点不到确认）；提到 1500 后又与回收站/审计面板同层且 DOM 靠前（实测按钮中心点命中 `.audit-entry`）。现统一 1600，面板 1500；复测命中 `confirm-yes` 且删除生效
+- **`[无法解密]` 行没有删除入口**：damaged 行整块跳过操作区，用户只能改库清理。现在保留删除按钮、仅隐藏「编辑」，点击行本身给出提示而非打开空白详情
+- **迁移被引导闸门堵死**：`POST /api/note` 在未初始化时数的是「全部笔记」，删配置后既有真实笔记必然触发 409 `placeholder_exists`，初始化永远走不完。改为只数 `is_test=1` 占位行并保留 20 条上限；初始化页遇 `orphan_notes` 给出显式确认后带 `force` 重试，错误码改为可读中文
+- **对话框文案**：确认框是纯文本渲染，正文里的 Markdown `**` 会原样露出（迁移时可见）
 
 - **CI 从未真正执行**：`.github/workflows/deploy.yml` 在三处 `if:` 里引用 `secrets`，GitHub 解析期即拒绝（`Unrecognized named-value: 'secrets'`），所有 run 都是 0 job 的失败（自 2026-08-20 起）。改为 `test`（push 跑门禁）与 `deploy`（`workflow_dispatch` 显式触发）两个作业，secrets 只出现在 `env` 中；`.gitattributes` 为 `*.yml` 指定 LF
 - **安全（HIGH 12 项）**
