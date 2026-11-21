@@ -33,7 +33,7 @@
 - 测试覆盖：bootstrap 权限三态（无 token 拒绝 / 错误 token 拒绝 / 正确 token 放行）、未初始化读请求 fail-closed、错误 setup_token 403
 - 备份导入：读取备份 JSON 追加合并导入（不删除现有笔记），逐条以当前密钥重新派生并加密，保留原 created_at/updated_at，含 BOM 剥离、JSON 校验、进度与失败统计
 - PUT /api/note/:id 支持可选 `created_at`/`updated_at` 字段（服务端校验非空字符串 ≤64 字符，非法返回 400）
-- `dev-temp.bat` + `scripts/dev-temp.mjs`：一键启动临时实例，数据落 `.wrangler/temp-<时间戳>`，退出即删（`--keep` 保留），自动选空闲端口、打印 `SETUP_TOKEN`、就绪后开浏览器
+- `dev-temp.bat` + `scripts/dev-temp.mjs`：一键启动临时实例，数据落 `.wrangler/temp-<时间戳>`，退出即删（`--keep` 保留），自动选空闲端口；**每次运行随机生成**一次性 `SETUP_TOKEN`（48 位 hex，经 `--var` 注入，覆盖 `.dev.vars`），默认不打开浏览器（`--open` 才开）
 - `scripts/check-docs.mjs`（`npm run check:docs`，CI 执行）：校验 README 的脚本名/接口/文件/错误码/锚点与代码一致
 - `.dev.vars.example`（逐字段注释）、`.gitattributes`（强制 `*.bat` 为 CRLF）、`docs/README.md` 文档索引
 

@@ -2,7 +2,7 @@
 // Temporary, disposable local instance of the S-Qrypt worker.
 // State goes to .wrangler/temp-<timestamp> and is deleted when wrangler exits.
 import { spawn, execFileSync } from 'node:child_process';
-import { readFileSync, existsSync, mkdirSync, rmSync, readdirSync, statSync } from 'node:fs';
+import { existsSync, mkdirSync, rmSync, readdirSync, statSync } from 'node:fs';
 import { createServer } from 'node:net';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -17,20 +17,10 @@ const value = (name, fallback) => {
 };
 
 const keepState = flag('--keep');
-const openBrowser = !flag('--no-open');
+const openBrowser = flag('--open');
 const wantedPort = Number(value('--port', '8787'));
 const stamp = new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-');
 const stateDir = join(root, '.wrangler', `temp-${stamp}`);
-
-function readSetupToken() {
-  const file = join(root, '.dev.vars');
-  if (existsSync(file)) {
-    const raw = readFileSync(file, 'utf8').replace(/^\uFEFF/, '');
-    const m = raw.match(/^\s*SETUP_TOKEN\s*=\s*(.+)$/m);
-    if (m) return { token: m[1].trim().replace(/^["']|["']$/g, ''), source: '.dev.vars' };
-  }
-  return { token: randomBytes(12).toString('hex'), source: 'generated' };
-}
 
 
 function sweepStale(olderThanMs) {
@@ -129,7 +119,8 @@ for (const sig of ['SIGINT', 'SIGTERM', 'SIGHUP']) {
 process.on('exit', cleanup);
 
 const swept = sweepStale(60 * 60 * 1000);
-const { token, source } = readSetupToken();
+// 每次启动都换一个一次性初始化口令，不从 .dev.vars 复用。
+const token = randomBytes(24).toString('hex');
 const port = await pickPort(wantedPort);
 const base = `http://127.0.0.1:${port}`;
 mkdirSync(stateDir, { recursive: true });
@@ -137,15 +128,17 @@ mkdirSync(stateDir, { recursive: true });
 console.log('S-Qrypt 临时实例');
 console.log(`  目录      ${root}`);
 console.log(`  数据      ${stateDir}${keepState ? '（结束后保留）' : '（结束后删除）'}`);
-console.log(`  SETUP_TOKEN  ${token}   ← 来自 ${source}，初始化保险箱时粘贴这个`);
+console.log(`  SETUP_TOKEN  ${token}`);
+console.log('               （本次运行随机生成，退出即失效；初始化保险箱时粘贴这个）');
 console.log(`  地址      ${base}`);
 console.log('');
 if (swept) console.log(`  已清理 ${swept} 个残留的临时数据目录（超过 1 小时）`);
 console.log('  启动中…首次启动要等 wrangler 拉起 workerd。按 Ctrl+C 结束。');
+console.log('  （不会自动开浏览器；加 --open 让脚本开。）');
 console.log('  注意：本窗口被强制关闭（不是 Ctrl+C）时，临时数据要等下次启动才自动清理。');
 console.log('');
 
-const devCmd = `npx wrangler dev --port ${port} --ip 127.0.0.1 --persist-to "${stateDir}"`;
+const devCmd = `npx wrangler dev --port ${port} --ip 127.0.0.1 --persist-to "${stateDir}" --var SETUP_TOKEN:${token}`;
 child = spawn(devCmd, { cwd: root, stdio: 'inherit', shell: true, env: process.env });
 
 const ready = await waitReady(`${base}/api/init-check`, 120000);
@@ -153,6 +146,7 @@ if (ready) {
   console.log(`\n▸ 就绪：${base}`);
   console.log(`▸ 初始化时 SETUP_TOKEN 填：${token}`);
   if (openBrowser) launchBrowser(base);
+  else console.log('▸ 未自动打开浏览器（需要的话加 --open，或手工访问上面的地址）');
 } else {
   console.log('\n▸ 等待就绪超时（120s），请查看上面的 wrangler 输出。');
 }

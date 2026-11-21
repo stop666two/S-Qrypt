@@ -190,10 +190,10 @@ npm run check:docs   # 校验 README 里的脚本名/接口/文件/错误码/锚
 双击 `dev-temp.bat`，或在终端执行：
 
 ```bat
-dev-temp.bat                      :: 默认 8787，自动挑空闲端口
+dev-temp.bat                      :: 默认 8787，自动挑空闲端口；不开浏览器
+dev-temp.bat --open               :: 就绪后自动打开浏览器
 dev-temp.bat --port 8790          :: 指定起始端口
 dev-temp.bat --keep               :: 结束后保留临时数据
-dev-temp.bat --no-open            :: 不自动打开浏览器
 ```
 
 它做的事：
@@ -201,13 +201,13 @@ dev-temp.bat --no-open            :: 不自动打开浏览器
 | 步骤 | 行为 |
 |---|---|
 | 前置检查 | 没有 Node.js 会直接报错退出（`dev-temp.bat` 只做这一步的包围，逻辑全在 `scripts/dev-temp.mjs`） |
-| 取初始化口令 | 读 `.dev.vars` 的 `SETUP_TOKEN`；没有就随机生成一个并打印出来 |
+| 取初始化口令 | **每次启动随机生成**（48 位 hex），用 `--var SETUP_TOKEN=…` 注入并打印；`.dev.vars` 里的固定值在本实例中不生效 |
 | 数据隔离 | 状态写进 `.wrangler/temp-<时间戳>/`，**不碰**已存在的本地库；启动时顺手清理超过 1 小时的残留目录 |
 | 端口 | 从 8787 起探测到第一个空闲端口，被占也不会失败 |
-| 就绪检测 | 轮询 `/api/init-check` 直到 200（上限 120 秒），然后打开浏览器 |
+| 就绪检测 | 轮询 `/api/init-check` 直到 200（上限 120 秒），打印地址；默认**不**开浏览器（`--open` 才开） |
 | 退出 | `Ctrl+C` 或 wrangler 退出即删除临时数据；窗口被强制关闭时，下次启动会清扫 |
 
-首次打开是空保险箱：用页面上提示的 `SETUP_TOKEN` 完成初始化即可。
+首次打开是空保险箱：把窗口里打印的 `SETUP_TOKEN` 粘进初始化表单即可。该口令只属于这次运行，进程退出后不再有效。
 
 **注意事项：** 主页面外壳在 `src/homeHtml.ts`，SPA 脚本在 `src/app.client.txt`（部署时混淆、以 `/app.js` 供出），Argon2 WASM 由 `<script src="/argon2.js">` 同源加载。修改后需重启 `npm run dev`。
 
