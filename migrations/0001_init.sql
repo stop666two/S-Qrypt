@@ -7,7 +7,8 @@ CREATE TABLE IF NOT EXISTS config (
   init_completed INTEGER NOT NULL DEFAULT 0,
   kdf_version INTEGER NOT NULL DEFAULT 1,
   salt TEXT NOT NULL DEFAULT '',
-  audit_public_key TEXT NOT NULL DEFAULT ''
+  audit_public_key TEXT NOT NULL DEFAULT '',
+  token_issued_at INTEGER NOT NULL DEFAULT 0
 );
 
 CREATE TABLE IF NOT EXISTS notes (
@@ -17,7 +18,8 @@ CREATE TABLE IF NOT EXISTS notes (
   is_test INTEGER NOT NULL DEFAULT 0 CHECK (is_test IN (0,1)),
   deleted INTEGER NOT NULL DEFAULT 0 CHECK (deleted IN (0,1)),
   created_at TEXT DEFAULT (datetime('now')),
-  updated_at TEXT DEFAULT (datetime('now'))
+  updated_at TEXT DEFAULT (datetime('now')),
+  kdf_version INTEGER NOT NULL DEFAULT 0
 );
 
 CREATE TABLE IF NOT EXISTS auth_limits (

@@ -312,3 +312,28 @@ $ grep -n "run:" .github/workflows/deploy.yml
 | R-27 | 已修 | 未初始化时仅允许 1 条占位笔记，第 2 次返回 409 `placeholder_exists` |
 | R-28 | 已修 | 删除 `/sw.js` 路由与 `serviceWorker.register`；README 的 PWA 宣称改为仅 Manifest |
 | R-23/R-24 | 已修 | KAT 改为校验唯一实现（`src/homeHtml.ts`），两副本问题随沙箱页删除消失 |
+
+---
+
+## 附录 F：安全强化round（P1–P9，用户确认后实施）
+
+在附录 E 的 28 条之外，按用户选择追加的实施项：
+
+| 编号 | 问题 | 落地方式 | 验证 |
+|---|---|---|---|
+| P1 | KDF 无 per-vault salt ⇒ 令牌哈希可预计算并跨部署复用 | `deriveMK(pw,onP,boost,needArgon2,saltHex)`：盐进入预混合与 Argon2id 输入，`kdf_version=3`；`notes.kdf_version` 标记每行派生版本；`POST /api/vault/upgrade`（begin 落盐 / finish 翻转）与客户端一键升级（双 MK 重加密，可中断续做）；初始化页新增「旧版本保险箱」选项以读回 v2 笔记 | 浏览器实测：`init-check` 返回 `kdf_version:3`，D1 中 `config` 与两条笔记均 `kdf_version=3`、salt 32 hex；API 用例覆盖 begin/finish/翻转后旧令牌失效 |
+| P2 | 源校验 fail-open（无 Origin/Referer 直接放行） | 缺头时按 `Sec-Fetch-Site` 判定，`cross-site` → 403 | 用例：`cross-site` 403 `forbidden_origin`，`same-origin` 正常创建 |
+| P3 | 仅 per-IP 限流，换 IP 可绕过 | 增加全局失败桶（500/5 分钟） | 由 R-04 用例（120 次失败）间接覆盖；全局桶命中未被单独断言（见「未验证」） |
+| P4 | 读令牌永不过期 | `config.token_issued_at` + 90 天 TTL，超期返回 401 `token_expired`；`POST /api/vault/rotate` 需 operation_token 才能续期；登录流程自动续期并重试 | 用例：置旧 issued_at → 401 `token_expired` → 无 op token 续期 403 → 续期 200 → 令牌恢复可用 |
+| P5 | `/argon2.wasm` 仍带 `Access-Control-Allow-Origin: *` | 删除该头与多余 CORP | 浏览器冒烟（Argon2 仍正常加载、登录成功） |
+| P6 | 密码策略仅 ≥10 位 | ≥12 位，或 ≥10 位且含 3 类字符；拒绝常见口令与全同字符 | 浏览器实测：`aaaaaaaaaa` 被拒并给出强度提示 |
+| P7 | CSP 缺 `base-uri`/`form-action` | 主页面与 `/deploy` 均补 | 头部断言（现有 CSP 断言） |
+| P8 | 本地审计链加载时不校验 | 加载时逐条重算，断裂条目标记 `⚠ 链断裂` | 仅静态与代码路径；未构造篡改样本实测 |
+| P9 | 明文 `verification_token` 比较分支残留 | 删除该分支，`requireVerificationToken` 只比对哈希 | 现有 39 条用例全绿 |
+
+### 未验证 / 已知缺口
+
+1. **客户端 v2→v3 迁移循环未在浏览器里端到端跑过**：需要一个真正的 v2 保险箱（旧版客户端产生）。已验证其组成件——双 MK 读取路径（`mkFor`）、`kdf_version` 行标记、`begin/finish` 翻转、API 层加密重写——但「重加密 N 条笔记」这段循环本身只有代码审查。
+2. **P3 全局桶命中**未单独断言（测试只验证了 per-IP 桶的 429）。
+3. **P8 断裂提示**未用篡改样本验证。
+4. 令牌 TTL 的 90 天边界用「把 issued_at 改到 1」模拟，未做真实时间推进。

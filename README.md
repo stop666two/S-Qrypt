@@ -37,7 +37,7 @@ S-Qrypt 是一个严格零信任、后量子安全的加密笔记保险箱，专
 | **操作授权令牌** | 所有写操作需携带 HKDF 派生的一次性令牌，防越权操作 |
 | **频率限制** | 写操作连续失败 40 次/5 分钟、认证失败 100 次/5 分钟，超限锁定 10 分钟；成功请求不计入 |
 | **抗侧信道** | 恒定时间比较 + 随机延迟填充 + CSP/COOP/COEP + img-src + CORP + frame-ancestors 头 |
-| **主密钥派生验证令牌** | verification_token = HKDF(MK)，离线校验必须完成完整 KDF；服务端仅存其 SHA-256 哈希 |
+| **主密钥派生验证令牌** | verification_token = HKDF(MK)；MK 的派生包含 per-vault 随机盐，离线校验既要做完整 KDF，也无法跨部署复用预计算表 |
 
 ### 功能特性
 | 特性 | 说明 |
@@ -136,23 +136,41 @@ Schema 由 Worker 首次请求时自动创建；`migrations/0001_init.sql` 与�
 
 ---
 
-## 升级说明：验证令牌改为 MK 派生
+## 升级说明（从 v1.0.1 或旧派生版本）
 
-v1.0.1 及更早版本的 `verification_token` 是 `SHA-256(salt ‖ SHA-224(password))`，只凭公开的 `salt` 就能离线穷举口令，从而绕过整套 KDF。当前版本令牌改为 `HKDF(MK, "s-qrypt-verify")`，服务端也只存它的哈希。
+旧版 `verification_token = SHA-256(salt ‖ SHA-224(password))`，只凭公开的 salt 就能离线穷举口令、绕过整套 KDF；当前版本改为 `HKDF(MK)`，且 MK 的派生含 per-vault 随机盐（`kdf_version=3`）。
 
-**后果：已有保险箱用旧令牌将无法登录，必须重置一次验证配置。**
+### 1. 令牌哈希对不上，必须重置一次验证配置
+
+旧保险箱直接登录会一直提示「密码错误」（服务端存的是旧格式哈希）。
 
 ```bash
-# 1) 记下当前保险箱没有任何「未导出」的笔记（笔记本身不会被动到）
-# 2) 清掉 config 行（notes / audit_logs 保留）
 npx wrangler d1 execute s-qrypt-db --remote \
   --command "DELETE FROM config WHERE id = 'app_config'"
-# 3) 打开站点，用同一个主密码 + SETUP_TOKEN 重新初始化
 ```
 
-同一主密码会派生出同一个 MK，因此历史笔记仍可正常解密；只有令牌（以及被清空的 RSA 审计公钥）需要重配。
+### 2. 重置时勾选「旧版本保险箱」才能读回旧笔记
+
+打开站点 → 初始化页 → **勾选「旧版本保险箱（v1/v2）」** → 用同一个主密码初始化。
+
+这样派生的是无盐 MK（与 v1/v2 一致），历史笔记仍可解密；登录后页面会自动询问是否升级到 v3，确认后客户端用新旧两把 MK 把全部笔记重新加密到 v3。
+
+若不勾选（默认按 v3 初始化），新 MK 与旧笔记不匹配，历史笔记会显示为「数据损坏」，只能靠备份导入。
+
+### 3. 重加密中途关闭页面不会丢数据
+
+配置在 `finish` 之前仍是 v2：下次登录会同时派生新旧两把 MK，`kdf_version=3` 的行用新 MK、其余用旧 MK，升级可以续做。
+
+### 4. 其他行为变化
+
+- 读令牌有效期 90 天，过期时登录流程会用 operation_token 自动续期（`/api/vault/rotate`）
+- 初始化密码强度：≥12 位；或 ≥10 位且含大小写/数字/符号中的 3 类；拒绝常见口令与全同字符
+- 源校验：缺少 Origin/Referer 时按 `Sec-Fetch-Site` 判断，cross-site 直接 403
+- 脚本 CSP 不再需要 `'unsafe-inline'`；补 `base-uri 'none'`、`form-action 'none'`
 
 ---
+
+## 本地开发
 
 ```bash
 npm run dev        # 启动开发服务器 (http://127.0.0.1:8787)
@@ -162,7 +180,7 @@ npm run deploy:quick # dev-only：跳过混淆与测试，仅本地快速验证�
 npm run setup        # 一键 D1 创建 + 部署（结束后把 database_id 还原为运行前的值）
 ```
 
-**注意事项：** 前端 SPA 嵌入在 `src/homeHtml.ts` 模板字符串中，Argon2 WASM 由 `<script src="/argon2.js">` 同源加载。修改后需重启 `npm run dev`。
+**注意事项：** 主页面外壳在 `src/homeHtml.ts`，SPA 脚本在 `src/app.client.txt`（部署时混淆、以 `/app.js` 供出），Argon2 WASM 由 `<script src="/argon2.js">` 同源加载。修改后需重启 `npm run dev`。
 
 ---
 
@@ -203,7 +221,8 @@ npm run setup        # 一键 D1 创建 + 部署（结束后把 database_id 还�
 | **密钥** | 仅驻留页面内存 | 60 秒无操作自动清零，锁定同时清空 DOM 中的明文 |
 | **令牌** | HKDF 派生 operation_token | 每次写操作需携带，防 CSRF/越权 |
 | **频率** | 失败计数限流 | 写操作连续失败 40 次/5 分钟、认证失败 100 次/5 分钟后锁定 10 分钟；成功请求清零 |
-| **认证** | MK 派生 verification_token | 令牌无法脱离完整 KDF 计算，服务端仅存 SHA-256 哈希 |
+| **认证** | MK 派生 verification_token | MK 含随机盐（kdf_version=3）；服务端仅存令牌的 SHA-256 哈希 |
+| **令牌寿命** | token_issued_at + 90 天有效期 | 过期返回 token_expired；续期需 operation_token（MK 派生），仅窃取读令牌无法自行续命 |
 | **源校验** | Origin/Referer 严格同源 | 非本站源的 `/api/*` 请求返回 `forbidden_origin` |
 | **审计** | 本地哈希链 + RSA-OAEP 加密 | 本地链可对账；远程条目需私钥离线解密 |
 | **侧信道** | 恒定时间比较 + 随机延迟填充 | 防御时序攻击 |
@@ -212,7 +231,9 @@ npm run setup        # 一键 D1 创建 + 部署（结束后把 database_id 还�
 
 - WASM 由 Worker 路由 `/argon2.js` 与 `/argon2.wasm` 同源自托管，无外部 CDN 依赖。
 - `deriveMK` 只有一条实现路径：`kdf_version=2` 的保险箱在任何环境都走 Argon2id；若浏览器禁用 WebAssembly（或 WASM 加载超时 10 秒），会明确报错而不是降级成另一把密钥——降级会得到与库内 `kdf_version` 不匹配的 MK，只会把保险箱锁死。
-- `kdf_version=1` 的历史保险箱仍按 v1 路径派生（不含 Argon2id），可正常解锁。
+- `kdf_version=3`（当前默认）：Argon2id 的盐与预混合输入都含 16 字节 per-vault 随机盐，同一口令在不同部署上派生出不同的 MK；
+- `kdf_version=2`（旧保险箱）：不含盐，登录后可一键升级到 v3，客户端会用新旧两把 MK 重加密全部笔记；
+- `kdf_version=1`（最早保险箱）：按 v1 路径派生（不含 Argon2id），可正常解锁并有同样的一键升级入口。
 
 ### 数据流
 
@@ -274,8 +295,10 @@ operation_token: <hex_token>          # 所有 POST/PUT/PATCH/DELETE 请求体�
 | 方法 | 路径 | 认证 | 说明 |
 |------|------|------|------|
 | `GET` | `/api/init-check` | 无 | 返回 `{initialized, db_bound, kdf_version}` |
-| `GET` | `/api/token` | 频率限制 | 返回 `{audit_public_key?}`；不再返回验证令牌，也不再返回 salt。响应带 `Cache-Control: no-store`。频率：100 次/5 分钟 |
-| `POST` | `/api/init` | setup_token | 初始化保险箱。请求体: `{setup_token, verification_token, operation_token_hash, kdf_version?, audit_public_key?}`。`verification_token`/`operation_token_hash` 须为 ≤128 位十六进制，`audit_public_key` ≤10000 字符（超限 400）。setup_token 必须与环境变量 `SETUP_TOKEN` 一致（未配置时返回 503） |
+| `GET` | `/api/token` | 频率限制 | 返回 `{salt?, audit_public_key?, token_issued_at?}`。salt 是公开的 KDF 输入（16 字节 hex），不含它就无法按 v3 派生；响应带 `Cache-Control: no-store`。频率：100 次/5 分钟 |
+| `POST` | `/api/init` | setup_token | 初始化保险箱。请求体: `{setup_token, verification_token, operation_token_hash, kdf_version?, salt?, audit_public_key?}`。`kdf_version=3` 时 `salt` 必须是 32 位十六进制（否则 400 `invalid_salt`）；其余字段须为 ≤128 位十六进制，`audit_public_key` ≤10000 字符。setup_token 必须与环境变量 `SETUP_TOKEN` 一致（未配置时返回 503） |
+| `POST` | `/api/vault/upgrade` | operation_token | 把旧保险箱升级到 v3。`mode=begin` 先落 salt（`{mode, operation_token, salt}`），`mode=finish` 再用新令牌与哈希翻转版本（`{mode, operation_token, verification_token, operation_token_hash}`） |
+| `POST` | `/api/vault/rotate` | operation_token | 续期读令牌（重置 `token_issued_at`），返回新的 `token_issued_at` |
 
 ### 笔记操作
 
@@ -283,8 +306,8 @@ operation_token: <hex_token>          # 所有 POST/PUT/PATCH/DELETE 请求体�
 |------|------|------|------|
 | `GET` | `/api/notes?offset=0&limit=50&deleted=1` | X-Verification-Token | 笔记列表，`deleted=1` 查看回收站，`is_test` 行永不返回 |
 | `POST` | `/api/note` | operation_token | 创建空白笔记，返回 `{id}`。未初始化时仅允许创建 1 条占位笔记（第 2 次返回 409 `placeholder_exists`） |
-| `GET` | `/api/note/:id` | X-Verification-Token | 获取单条笔记（含加密元数据和正文）；`is_test` 行返回 404 |
-| `PUT` | `/api/note/:id` | operation_token | 更新笔记。body ≤2MB，meta ≤10KB。省略 `updated_at` 时写库内时间戳；显式传入则原样保存（≤64 字符，备份导入保留原时间戳） |
+| `GET` | `/api/note/:id` | X-Verification-Token | 获取单条笔记（含加密元数据、正文与 `kdf_version`）；`is_test` 行返回 404；`?deleted=1` 允许读取软删除行（仅升级脚本使用） |
+| `PUT` | `/api/note/:id` | operation_token | 更新笔记。body ≤2MB，meta ≤10KB。省略 `updated_at` 时写库内时间戳；显式传入则原样保存（≤64 字符）。可选 `kdf_version`（0–3）标记该行加密所用派生版本 |
 | `PATCH` | `/api/note/:id/soft-delete` | operation_token | 软删除（deleted=1） |
 | `PATCH` | `/api/note/:id/restore` | operation_token | 恢复软删除（deleted=0） |
 | `DELETE` | `/api/note/:id` | operation_token | 硬删除 |
@@ -315,10 +338,10 @@ operation_token: <hex_token>          # 所有 POST/PUT/PATCH/DELETE 请求体�
 | 状态码 | error 字段 | 说明 |
 |--------|-----------|------|
 | 400 | `invalid_json`, `invalid_token`, `invalid_body`, `invalid_id`, `invalid_meta`, `invalid_is_test`, `invalid_key`, `invalid_entry`, `invalid_fingerprint`, `invalid_salt`, `invalid_verification_token`, `invalid_operation_token_hash`, `invalid_kdf_version`, `invalid_created_at`, `invalid_updated_at`, `missing_verification_token`, `missing_operation_token_hash` | 请求格式或字段校验失败 |
-| 401 | `unauthorized` | X-Verification-Token 无效，或保险箱未初始化 |
+| 401 | `unauthorized`, `token_expired` | 令牌无效/保险箱未初始化；或读令牌超过 90 天有效期（用 `/api/vault/rotate` 续期） |
 | 403 | `forbidden`, `forbidden_origin`, `forbidden_referer`, `invalid_setup_token`, `missing_operation_token` | operation_token 无效 / 源校验拦截 / setup_token 错误或缺失 |
 | 404 | `not_found`, `not_initialized` | 资源不存在或未初始化 |
-| 409 | `already_initialized`, `placeholder_exists` | 保险箱已初始化 / 引导阶段已存在占位笔记 |
+| 409 | `already_initialized`, `placeholder_exists`, `already_upgraded`, `salt_not_staged` | 已初始化 / 引导阶段已有占位笔记 / 已是 v3 / 未先落 salt 就 finish |
 | 429 | `rate_limited` | 频率限制（含 `retry_after` 秒数） |
 | 503 | `setup_token_not_configured` | 服务端未配置 SETUP_TOKEN，初始化被拒绝 |
 
